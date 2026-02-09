@@ -30,7 +30,7 @@ interface JournalEntry {
 }
 
 export function memoryTools(agent: Wisp) {
-	const { sql } = agent;
+	const sql = agent.sql.bind(agent);
 
 	return {
 		get_user: tool({

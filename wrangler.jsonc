@@ -19,10 +19,7 @@
 			"new_sqlite_classes": ["Wisp"]
 		}
 	],
-	"ai": {
-		"binding": "AI"
-	},
-	"observability": {
+"observability": {
 		"enabled": true
 	}
 }

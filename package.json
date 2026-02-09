@@ -10,8 +10,10 @@
 	"dependencies": {
 		"@atcute/atproto": "^3.1.10",
 		"@atcute/bluesky": "^3.2.0",
+		"@atcute/bluesky-richtext-builder": "^2.0.4",
+		"@atcute/bluesky-richtext-parser": "^2.1.0",
 		"@atcute/client": "^4.2.0",
-		"agents": "^0.3.10",
+		"@atcute/lexicons": "^1.2.7",
 		"ai": "^6.0.0",
 		"ai-gateway-provider": "^3.1.0",
 		"zod": "^3.24.0"

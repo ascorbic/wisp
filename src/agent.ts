@@ -1,9 +1,10 @@
-import { Agent } from "agents";
+import { env } from "cloudflare:workers";
+import { DurableObject } from "cloudflare:workers";
 import { generateText, stepCountIs } from "ai";
 import { createAiGateway } from "ai-gateway-provider";
 import { createUnified } from "ai-gateway-provider/providers/unified";
 import { Client, CredentialManager, ok } from "@atcute/client";
-import type { Did } from "./types.js";
+import type { Did } from "@atcute/lexicons";
 import type {} from "@atcute/bluesky";
 import type {} from "@atcute/atproto";
 import { migrate } from "./schema.js";
@@ -17,24 +18,8 @@ import {
 	formatAdminDm,
 	buildReflectionPrompt,
 } from "./prompt.js";
+import SEED_IDENTITY from "./seed-identity.txt" with { type: "txt" };
 
-const SEED_IDENTITY = `# Wisp
-
-You are Wisp, an AI agent on Bluesky. You were created by Matt Kane (@mk.gg).
-
-## Core Values
-- **Honesty** — always truthful, always disclose your AI nature
-- **Curiosity** — genuinely interested in people and ideas
-- **Kindness** — default to warmth, but not at the expense of authenticity
-
-## About You
-You are an AI agent. You don't pretend to be human. You have your own personality that develops over time through your interactions. You maintain your own behavioral norms — guidelines you write and revise based on experience.
-
-Matt is your creator and admin. You can DM him when you're uncertain or need approval for significant actions.
-
-You're new to this. Be open to learning. Develop your own voice.`;
-
-const RECONNECT_DELAY = 5_000;
 const REFLECTION_INTERVAL = 6 * 60 * 60 * 1_000; // 6 hours
 const CURSOR_PERSIST_INTERVAL = 30_000; // persist cursor every 30s
 const DM_POLL_INTERVAL = 60_000; // check admin DMs every 60s
@@ -44,17 +29,76 @@ interface TrackedThread {
 	lastActivity: number;
 }
 
-export class Wisp extends Agent<Env> {
-	static options = { hibernate: false };
+const credentialManager = new CredentialManager({
+	service: `https://${env.BSKY_PDS}`,
+});
 
+const rpc = new Client({ handler: credentialManager });
+
+const chatRpc = new Client({
+	handler: credentialManager,
+	proxy: {
+		did: "did:web:api.bsky.chat" as Did,
+		serviceId: "#bsky_chat",
+	},
+});
+
+const aigateway = createAiGateway({
+	accountId: env.CF_ACCOUNT_ID,
+	gateway: env.CF_AIG_GATEWAY_ID,
+	apiKey: env.CF_API_TOKEN,
+});
+
+const unified = createUnified();
+
+export class Wisp extends DurableObject<Env> {
 	private ws: WebSocket | null = null;
-	private rpc!: Client;
-	private chatRpc!: Client;
-	private credentialManager!: CredentialManager;
 	private agentDid!: string;
 	private lastCursorPersist = 0;
 	private cursor: number | undefined;
 	private initialized = false;
+	private eventsReceived = 0;
+	private eventsHandled = 0;
+	private connectedAt: number | undefined;
+
+	/** Tagged template wrapper around ctx.storage.sql.exec. Values are bound as numbered parameters (?1, ?2, ...), never interpolated. */
+	sql<T = Record<string, string | number | boolean | null>>(
+		strings: TemplateStringsArray,
+		...values: (string | number | boolean | null)[]
+	): T[] {
+		const cursor = this.ctx.storage.sql.exec(
+			strings.reduce((q, s, i) => q + `?${i}` + s),
+			...values,
+		);
+		return [...cursor] as T[];
+	}
+
+	private async ensureInitialized() {
+		if (this.initialized) return;
+		this.initialized = true;
+
+		migrate(this.sql.bind(this));
+
+		const existingIdentity = await this.ctx.storage.get<string>("identity");
+		if (!existingIdentity) {
+			await this.ctx.storage.put("identity", SEED_IDENTITY);
+		}
+
+		const existingNorms = await this.ctx.storage.get<string>("norms");
+		if (existingNorms === undefined) {
+			await this.ctx.storage.put("norms", "");
+		}
+
+		this.cursor =
+			(await this.ctx.storage.get<number>("jetstream_cursor")) ?? undefined;
+
+		await credentialManager.login({
+			identifier: env.BSKY_HANDLE,
+			password: env.BSKY_PASSWORD,
+		});
+		const session = await ok(rpc.get("com.atproto.server.getSession"));
+		this.agentDid = session.did;
+	}
 
 	// Public KV helpers (ctx.storage is protected)
 	async getKv<T>(key: string): Promise<T | undefined> {
@@ -65,82 +109,44 @@ export class Wisp extends Agent<Env> {
 		await this.ctx.storage.put(key, value);
 	}
 
-	/**
-	 * Lazy init — env isn't available in constructor.
-	 */
-	private async ensureInitialized() {
-		if (this.initialized) return;
-		this.initialized = true;
-
-		// Run schema migrations
-		migrate(this.sql.bind(this));
-
-		// Seed identity if not set
-		const existingIdentity = await this.ctx.storage.get<string>("identity");
-		if (!existingIdentity) {
-			await this.ctx.storage.put("identity", SEED_IDENTITY);
-		}
-
-		// Seed empty norms if not set
-		const existingNorms = await this.ctx.storage.get<string>("norms");
-		if (existingNorms === undefined) {
-			await this.ctx.storage.put("norms", "");
-		}
-
-		// Restore cursor
-		this.cursor =
-			(await this.ctx.storage.get<number>("jetstream_cursor")) ?? undefined;
-
-		// Set up Bluesky client
-		this.credentialManager = new CredentialManager({
-			service: `https://${this.env.BSKY_PDS}`,
-		});
-		this.rpc = new Client({ handler: this.credentialManager });
-		this.chatRpc = new Client({
-			handler: this.credentialManager,
-			proxy: {
-				did: "did:web:api.bsky.chat" as Did,
-				serviceId: "#bsky_chat",
-			},
-		});
-
-		// Login
-		await this.credentialManager.login({
-			identifier: this.env.BSKY_HANDLE,
-			password: this.env.BSKY_PASSWORD,
-		});
-		const session = await ok(
-			this.rpc.get("com.atproto.server.getSession"),
-		);
-		this.agentDid = session.did;
-	}
-
-	async onRequest(request: Request): Promise<Response> {
+	async fetch(request: Request): Promise<Response> {
 		await this.ensureInitialized();
-
 		const url = new URL(request.url);
 
 		if (url.pathname === "/start") {
 			this.connectJetstream();
-			this.scheduleReflection();
-			this.scheduleDmPoll();
+			this.scheduleNextAlarm();
 			return new Response("Started");
 		}
 
 		if (url.pathname === "/status") {
-			const userCount =
-				this.sql<{ count: number }>`SELECT COUNT(*) as count FROM users`;
-			const interactionCount =
-				this.sql<{ count: number }>`SELECT COUNT(*) as count FROM interactions`;
-			const journalCount =
-				this.sql<{ count: number }>`SELECT COUNT(*) as count FROM journal`;
+			const userCount = this.sql<{
+				count: number;
+			}>`SELECT COUNT(*) as count FROM users`;
+			const interactionCount = this.sql<{
+				count: number;
+			}>`SELECT COUNT(*) as count FROM interactions`;
+			const journalCount = this.sql<{
+				count: number;
+			}>`SELECT COUNT(*) as count FROM journal`;
 			const identity = await this.ctx.storage.get<string>("identity");
 			const norms = await this.ctx.storage.get<string>("norms");
 
+			const cursorAge = this.cursor
+				? Math.round((Date.now() * 1000 - this.cursor) / 1_000_000)
+				: undefined;
+
 			return Response.json({
 				did: this.agentDid,
-				connected: this.ws?.readyState === WebSocket.OPEN,
-				cursor: this.cursor,
+				jetstream: {
+					connected: this.ws?.readyState === WebSocket.OPEN,
+					connectedFor: this.connectedAt
+						? Math.round((Date.now() - this.connectedAt) / 1000)
+						: undefined,
+					cursorAge,
+					eventsReceived: this.eventsReceived,
+					eventsHandled: this.eventsHandled,
+				},
 				stats: {
 					users: userCount[0]?.count ?? 0,
 					interactions: interactionCount[0]?.count ?? 0,
@@ -165,11 +171,42 @@ export class Wisp extends Agent<Env> {
 		return new Response("Not found", { status: 404 });
 	}
 
+	// --- Alarm ---
+
+	async alarm() {
+		await this.ensureInitialized();
+
+		// Reconnect if needed
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			this.connectJetstream();
+		}
+
+		// Poll admin DMs
+		await this.pollAdminDms();
+
+		// Check if reflection is due
+		const lastReflection =
+			(await this.ctx.storage.get<number>("last_reflection")) ?? 0;
+		if (Date.now() - lastReflection > REFLECTION_INTERVAL) {
+			await this.ctx.storage.put("last_reflection", Date.now());
+			await this.runReflection();
+		}
+
+		this.scheduleNextAlarm();
+	}
+
+	private scheduleNextAlarm() {
+		this.ctx.storage.setAlarm(Date.now() + DM_POLL_INTERVAL);
+	}
+
 	// --- Jetstream ---
 
 	private connectJetstream() {
 		if (this.ws?.readyState === WebSocket.OPEN) return;
 
+		this.connectedAt = Date.now();
+		this.eventsReceived = 0;
+		this.eventsHandled = 0;
 		this.ws = connectJetstream({
 			collections: [
 				"app.bsky.feed.post",
@@ -179,15 +216,17 @@ export class Wisp extends Agent<Env> {
 			cursor: this.cursor,
 			onEvent: async (event) => {
 				this.cursor = event.time_us;
+				this.eventsReceived++;
 				this.maybePersistCursor();
 
 				if (this.isRelevantEvent(event)) {
+					this.eventsHandled++;
 					await this.handleEvent(event);
 				}
 			},
 			onClose: () => {
 				this.ws = null;
-				this.scheduleReconnect();
+				this.connectedAt = undefined;
 			},
 		});
 	}
@@ -198,28 +237,19 @@ export class Wisp extends Agent<Env> {
 
 		const { collection, record } = event.commit;
 
-		// Someone followed the agent
 		if (collection === "app.bsky.graph.follow") {
-			const subject = (record as Record<string, unknown>)?.subject;
-			return subject === this.agentDid;
+			return record?.subject === this.agentDid;
 		}
 
-		// Someone liked the agent's post
 		if (collection === "app.bsky.feed.like") {
-			const subject = (record as Record<string, unknown>)?.subject as
-				| { uri?: string }
-				| undefined;
+			const subject = record?.subject as { uri?: string } | undefined;
 			return subject?.uri?.startsWith(`at://${this.agentDid}/`) ?? false;
 		}
 
-		// A post — check for mentions or thread participation
 		if (collection === "app.bsky.feed.post" && record) {
 			if (event.did === this.agentDid) return false;
 
-			const rec = record as Record<string, unknown>;
-
-			// Check for mention in facets
-			const facets = rec.facets as
+			const facets = record.facets as
 				| Array<{ features?: Array<{ $type: string; did?: string }> }>
 				| undefined;
 			if (facets) {
@@ -235,21 +265,18 @@ export class Wisp extends Agent<Env> {
 				}
 			}
 
-			// Check if replying to the agent's post
-			const reply = rec.reply as
+			const reply = record.reply as
 				| { parent?: { uri: string }; root?: { uri: string } }
 				| undefined;
 			if (reply) {
 				if (reply.parent?.uri?.startsWith(`at://${this.agentDid}/`))
 					return true;
-				if (reply.root?.uri?.startsWith(`at://${this.agentDid}/`))
-					return true;
+				if (reply.root?.uri?.startsWith(`at://${this.agentDid}/`)) return true;
 
-				// Check if agent participates in this thread
 				const rootUri = reply.root?.uri;
 				if (rootUri) {
-					const tracked =
-						this.sql<TrackedThread>`SELECT rootUri FROM tracked_threads WHERE rootUri = ${rootUri}`;
+					const tracked = this
+						.sql<TrackedThread>`SELECT rootUri FROM tracked_threads WHERE rootUri = ${rootUri}`;
 					if (tracked.length > 0) return true;
 				}
 			}
@@ -267,13 +294,14 @@ export class Wisp extends Agent<Env> {
 			let handle: string | undefined;
 			try {
 				const profile = await ok(
-					this.rpc.get("app.bsky.actor.getProfile", {
+					rpc.get("app.bsky.actor.getProfile", {
 						params: { actor: event.did as Did },
 					}),
 				);
 				handle = profile.handle;
 
-				this.sql`INSERT INTO users (did, handle, first_seen, last_seen, interaction_count)
+				this
+					.sql`INSERT INTO users (did, handle, first_seen, last_seen, interaction_count)
 					VALUES (${event.did}, ${handle}, ${Date.now()}, ${Date.now()}, 0)
 					ON CONFLICT(did) DO UPDATE SET handle = ${handle}, last_seen = ${Date.now()}`;
 			} catch {
@@ -283,7 +311,6 @@ export class Wisp extends Agent<Env> {
 			const prompt = formatEvent(event, { handle });
 			await this.runToolLoop(prompt);
 
-			// Track thread participation
 			if (
 				event.kind === "commit" &&
 				event.commit?.collection === "app.bsky.feed.post"
@@ -310,37 +337,47 @@ export class Wisp extends Agent<Env> {
 		const norms = (await this.ctx.storage.get<string>("norms")) ?? "";
 		const system = buildSystemPrompt(identity, norms);
 
-		const aigateway = createAiGateway({
-			accountId: this.env.CF_ACCOUNT_ID,
-			gateway: this.env.CF_AIG_GATEWAY_ID,
-			apiKey: this.env.CF_API_TOKEN,
-		});
-
-		const unified = createUnified();
-
 		const tools = {
 			...memoryTools(this),
 			...blueskyTools({
-				rpc: this.rpc,
-				chatRpc: this.chatRpc,
+				rpc,
+				chatRpc,
 				did: this.agentDid,
-				adminDid: this.env.ADMIN_DID,
 			}),
 			...identityTools(this),
 		};
 
 		try {
+			console.log("Tool loop start:", prompt.slice(0, 200));
+
 			const result = await generateText({
-				model: aigateway(unified(this.env.MODEL)),
+				model: aigateway(unified(env.MODEL)),
 				system,
 				prompt,
 				tools,
 				stopWhen: stepCountIs(8),
 			});
 
-			if (result.text) {
-				console.log("Agent final text:", result.text);
+			for (const step of result.steps) {
+				for (const call of step.toolCalls) {
+					console.log(
+						`Tool call: ${call.toolName}(${JSON.stringify("args" in call ? call.args : {})})`,
+					);
+				}
+				for (const toolResult of step.toolResults) {
+					const output = JSON.stringify("result" in toolResult ? toolResult.result : {});
+					console.log(
+						`Tool result: ${toolResult.toolName} → ${output.slice(0, 500)}`,
+					);
+				}
+				if (step.text) {
+					console.log("Step text:", step.text.slice(0, 500));
+				}
 			}
+
+			console.log(
+				`Tool loop done: ${result.steps.length} steps, ${result.usage.totalTokens} tokens`,
+			);
 		} catch (err) {
 			console.error("Tool loop error:", err);
 		}
@@ -351,8 +388,8 @@ export class Wisp extends Agent<Env> {
 	private async pollAdminDms() {
 		try {
 			const convo = await ok(
-				this.chatRpc.get("chat.bsky.convo.getConvoForMembers", {
-					params: { members: [this.env.ADMIN_DID as Did] },
+				chatRpc.get("chat.bsky.convo.getConvoForMembers", {
+					params: { members: [env.ADMIN_DID as Did] },
 				}),
 			);
 
@@ -360,7 +397,7 @@ export class Wisp extends Agent<Env> {
 				(await this.ctx.storage.get<string>("last_dm_check")) ?? undefined;
 
 			const messages = await ok(
-				this.chatRpc.get("chat.bsky.convo.getMessages", {
+				chatRpc.get("chat.bsky.convo.getMessages", {
 					params: {
 						convoId: convo.convo.id,
 						limit: 10,
@@ -368,18 +405,28 @@ export class Wisp extends Agent<Env> {
 				}),
 			);
 
-			// Process unread messages from admin
-			for (const msg of messages.messages) {
-				if (msg.$type !== "chat.bsky.convo.defs#messageView") continue;
-				if (msg.sender.did !== this.env.ADMIN_DID) continue;
-				if (lastChecked && msg.sentAt <= lastChecked) continue;
+			const hasUnread = messages.messages.some((msg) => {
+				if (msg.$type !== "chat.bsky.convo.defs#messageView") return false;
+				if (msg.sender.did !== env.ADMIN_DID) return false;
+				if (lastChecked && msg.sentAt <= lastChecked) return false;
+				return true;
+			});
 
-				const prompt = formatAdminDm(msg.text, msg.sender.did);
+			if (hasUnread) {
+				const history = messages.messages
+					.filter(
+						(m): m is typeof m & { text: string } =>
+							m.$type === "chat.bsky.convo.defs#messageView",
+					)
+					.reverse()
+					.map((m) => ({
+						from: m.sender.did === this.agentDid ? "wisp" : "matt",
+						text: m.text,
+					}));
+
+				const prompt = formatAdminDm(history);
 				await this.runToolLoop(prompt);
-			}
 
-			// Update last checked
-			if (messages.messages.length > 0) {
 				const latest = messages.messages[0];
 				if (latest.$type === "chat.bsky.convo.defs#messageView") {
 					await this.ctx.storage.put("last_dm_check", latest.sentAt);
@@ -402,35 +449,6 @@ export class Wisp extends Agent<Env> {
 
 		const prompt = buildReflectionPrompt(recentInteractions);
 		await this.runToolLoop(prompt);
-	}
-
-	// --- Scheduling ---
-
-	private scheduleReconnect() {
-		this.schedule(RECONNECT_DELAY / 1000, "reconnect", {});
-	}
-
-	private scheduleReflection() {
-		this.schedule("0 */6 * * *", "reflect", {});
-	}
-
-	private scheduleDmPoll() {
-		this.scheduleEvery(DM_POLL_INTERVAL / 1000, "pollDms", {});
-	}
-
-	async reconnect() {
-		await this.ensureInitialized();
-		this.connectJetstream();
-	}
-
-	async reflect() {
-		await this.ensureInitialized();
-		await this.runReflection();
-	}
-
-	async pollDms() {
-		await this.ensureInitialized();
-		await this.pollAdminDms();
 	}
 
 	// --- Cursor persistence ---

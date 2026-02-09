@@ -58,8 +58,14 @@ export function formatEvent(event: JetstreamEvent, context?: { handle?: string }
 	return `Event: ${operation} on ${collection} from @${handle} (${event.did})`;
 }
 
-export function formatAdminDm(text: string, senderDid: string): string {
-	return `Admin (Matt) sent you a DM: "${text}"\n\nRespond to admin requests. Matt can ask you about your memory, relationships, journal, recent activity, or anything else. Use your tools to look up what he asks about and respond via dm_admin.`;
+export function formatAdminDm(
+	history: Array<{ from: string; text: string }>,
+): string {
+	const conversation = history
+		.map((m) => `${m.from}: ${m.text}`)
+		.join("\n");
+
+	return `Admin DM conversation with Matt:\n\n${conversation}\n\nRespond to Matt's latest message. You have the full conversation history above for context. Use your tools to look up what he asks about and respond via dm_admin.`;
 }
 
 export function buildReflectionPrompt(recentInteractions: Array<{ summary: string; type: string; created_at: number }>): string {
