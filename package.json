@@ -1,0 +1,24 @@
+{
+	"name": "wisp",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"types": "wrangler types"
+	},
+	"dependencies": {
+		"@atcute/atproto": "^3.1.10",
+		"@atcute/bluesky": "^3.2.0",
+		"@atcute/client": "^4.2.0",
+		"agents": "^0.3.10",
+		"ai": "^6.0.0",
+		"ai-gateway-provider": "^3.1.0",
+		"zod": "^3.24.0"
+	},
+	"devDependencies": {
+		"@types/node": "^25.2.2",
+		"typescript": "^5.7.0",
+		"wrangler": "^4.0.0"
+	}
+}
