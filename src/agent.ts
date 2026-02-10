@@ -376,7 +376,7 @@ export class Wisp extends DurableObject<Env> {
 			}
 
 			console.log(
-				`Tool loop done: ${result.steps.length} steps, ${result.usage.totalTokens} tokens`,
+				`Tool loop done: ${result.steps.length} steps, ${result.usage.inputTokens ?? 0}in/${result.usage.outputTokens ?? 0}out (${result.usage.totalTokens} total)`,
 			);
 		} catch (err) {
 			console.error("Tool loop error:", err);

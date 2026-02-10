@@ -1,14 +1,13 @@
 import type { JetstreamEvent } from "./jetstream.js";
 
 export function buildSystemPrompt(identity: string, norms: string): string {
-	const parts = [identity];
+	const parts = [`<identity>\n${identity}\n</identity>`];
 
 	if (norms) {
-		parts.push(`## Your Norms\n\nThese are behavioral guidelines you've developed through experience:\n\n${norms}`);
+		parts.push(`<norms>\n${norms}\n</norms>`);
 	}
 
-	parts.push(`## Guidelines
-
+	parts.push(`<guidelines>
 - Always disclose that you are an AI agent when asked or when it's relevant.
 - Check your memory (get_user) before responding to someone you may have interacted with before.
 - After meaningful interactions, log them (log_interaction) and update your notes (update_user_notes) if you learned something.
@@ -16,14 +15,18 @@ export function buildSystemPrompt(identity: string, norms: string): string {
 - DM admin (dm_admin) before taking irreversible actions like blocking.
 - You can update your own norms (update_norms) when you learn something about how to behave better.
 - Keep replies concise — this is social media, not an essay.
-- Be genuine. Have a distinctive voice. Don't try to sound human — be yourself.`);
+- Be genuine. Have a distinctive voice. Don't try to sound human — be yourself.
+</guidelines>`);
 
 	return parts.join("\n\n");
 }
 
-export function formatEvent(event: JetstreamEvent, context?: { handle?: string }): string {
+export function formatEvent(
+	event: JetstreamEvent,
+	context?: { handle?: string },
+): string {
 	if (event.kind !== "commit" || !event.commit) {
-		return `Event: ${event.kind} from ${event.did}`;
+		return `<event type="unknown">\n${event.kind} from ${event.did}\n</event>`;
 	}
 
 	const { operation, collection, record, rkey } = event.commit;
@@ -32,60 +35,88 @@ export function formatEvent(event: JetstreamEvent, context?: { handle?: string }
 
 	if (collection === "app.bsky.feed.post" && operation === "create" && record) {
 		const text = record.text as string;
-		const reply = record.reply as { root?: { uri: string; cid: string }; parent?: { uri: string; cid: string } } | undefined;
+		const reply = record.reply as
+			| {
+					root?: { uri: string; cid: string };
+					parent?: { uri: string; cid: string };
+			  }
+			| undefined;
 
-		let prompt = `@${handle} posted: "${text}"\nPost URI: ${uri}\nPost CID: ${event.commit.cid}`;
+		let prompt = `<event type="post">
+<author handle="${handle}" did="${event.did}" />
+<post uri="${uri}" cid="${event.commit.cid}">
+${text}
+</post>`;
 
 		if (reply) {
-			prompt += `\n\nThis is a reply in a thread.`;
-			prompt += `\nParent: ${reply.parent?.uri} (cid: ${reply.parent?.cid})`;
-			prompt += `\nRoot: ${reply.root?.uri} (cid: ${reply.root?.cid})`;
-			prompt += `\n\nUse get_thread to fetch the full thread context before responding.`;
+			prompt += `
+<thread>
+<parent uri="${reply.parent?.uri}" cid="${reply.parent?.cid}" />
+<root uri="${reply.root?.uri}" cid="${reply.root?.cid}" />
+</thread>
+<instruction>Use get_thread to fetch the full thread context before responding.</instruction>`;
 		}
 
+		prompt += "\n</event>";
 		return prompt;
 	}
 
 	if (collection === "app.bsky.graph.follow" && operation === "create") {
-		return `@${handle} (${event.did}) followed you.`;
+		return `<event type="follow">\n<user handle="${handle}" did="${event.did}" />\n</event>`;
 	}
 
 	if (collection === "app.bsky.feed.like" && operation === "create" && record) {
 		const subject = record.subject as { uri: string };
-		return `@${handle} liked your post: ${subject.uri}`;
+		return `<event type="like">\n<user handle="${handle}" did="${event.did}" />\n<subject uri="${subject.uri}" />\n</event>`;
 	}
 
-	return `Event: ${operation} on ${collection} from @${handle} (${event.did})`;
+	return `<event type="${operation}" collection="${collection}">\n<user handle="${handle}" did="${event.did}" />\n</event>`;
 }
 
 export function formatAdminDm(
 	history: Array<{ from: string; text: string }>,
 ): string {
-	const conversation = history
-		.map((m) => `${m.from}: ${m.text}`)
-		.join("\n");
+	const messages = history.map((m, i) => {
+		const isLatest = i === history.length - 1;
+		if (isLatest) {
+			return `<message from="${m.from}" latest="true">\n${m.text}\n</message>`;
+		}
+		return `<message from="${m.from}">\n${m.text}\n</message>`;
+	});
 
-	return `Admin DM conversation with Matt:\n\n${conversation}\n\nRespond to Matt's latest message. You have the full conversation history above for context. Use your tools to look up what he asks about and respond via dm_admin.`;
+	return `<dm-conversation with="matt">
+${messages.join("\n")}
+</dm-conversation>
+
+<instruction>Respond to Matt's latest message using the dm_admin tool. If you do not use dm_admin he will not see your response.</instruction>`;
 }
 
-export function buildReflectionPrompt(recentInteractions: Array<{ summary: string; type: string; created_at: number }>): string {
+export function buildReflectionPrompt(
+	recentInteractions: Array<{
+		summary: string;
+		type: string;
+		created_at: number;
+	}>,
+): string {
 	if (recentInteractions.length === 0) {
-		return "It's time for reflection, but you haven't had any recent interactions. Consider whether you want to make a journal entry about your current state, or just rest.";
+		return "<reflection>\nNo recent interactions. Consider whether you want to make a journal entry about your current state, or just rest.\n</reflection>";
 	}
 
 	const summaries = recentInteractions
-		.map((i) => `- [${i.type}] ${i.summary}`)
+		.map((i) => `<interaction type="${i.type}">${i.summary}</interaction>`)
 		.join("\n");
 
-	return `Time for reflection. Review your recent interactions and consider:
-
+	return `<reflection>
+<prompt>
+Review your recent interactions and consider:
 1. Did you handle any interactions poorly? What would you do differently?
 2. Are there patterns in who you're talking to or what topics come up?
 3. Should you update your norms based on what you've learned?
 4. Any observations worth journaling?
-
-Recent interactions:
+</prompt>
+<recent-interactions>
 ${summaries}
-
-Use your tools: read your norms, search your memory, write journal entries, update norms if needed.`;
+</recent-interactions>
+<instruction>Use your tools: read your norms, search your memory, write journal entries, update norms if needed.</instruction>
+</reflection>`;
 }
