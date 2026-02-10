@@ -3,9 +3,10 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Client } from "@atcute/client";
 import { ok } from "@atcute/client";
-import type { Did, ResourceUri } from "@atcute/lexicons";
+import type { Did, Nsid, ResourceUri } from "@atcute/lexicons";
 import { tokenize, type Token } from "@atcute/bluesky-richtext-parser";
 import RichtextBuilder from "@atcute/bluesky-richtext-builder";
+import { getPdsEndpoint, type DidDocument } from "@atcute/identity";
 
 /** Strong reference to a record (needed for replies, likes, etc.) */
 const strongRefSchema = z.object({
@@ -32,7 +33,10 @@ function extractText(tokens: Token[]): string {
 async function buildRichText(
 	text: string,
 	rpc: Client,
-): Promise<{ text: string; facets?: ReturnType<RichtextBuilder["build"]>["facets"] }> {
+): Promise<{
+	text: string;
+	facets?: ReturnType<RichtextBuilder["build"]>["facets"];
+}> {
 	const tokens = tokenize(text);
 
 	// Check if there are any facet-worthy tokens
@@ -67,7 +71,10 @@ async function buildRichText(
 				builder.addLink(token.raw, token.url as `https://${string}`);
 				break;
 			case "link":
-				builder.addLink(extractText(token.children), token.url as `https://${string}`);
+				builder.addLink(
+					extractText(token.children),
+					token.url as `https://${string}`,
+				);
 				break;
 			case "topic":
 				builder.addTag(token.name);
@@ -91,17 +98,56 @@ async function buildRichText(
 	};
 }
 
+/** Resolve a handle to a DID. */
+async function resolveHandle(handle: string): Promise<string> {
+	const res = await fetch(
+		`https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(handle)}`,
+	);
+	if (!res.ok) throw new Error(`Failed to resolve handle: ${handle}`);
+	const data = (await res.json()) as { did: string };
+	return data.did;
+}
+
+/** Fetch a DID document and extract the PDS endpoint. */
+async function resolvePds(actor: string): Promise<string> {
+	const did = actor.startsWith("did:") ? actor : await resolveHandle(actor);
+	const res = await fetch(`https://plc.directory/${did}`);
+	if (!res.ok) throw new Error(`Failed to resolve DID document: ${did}`);
+	const doc = (await res.json()) as DidDocument;
+	const pds = getPdsEndpoint(doc);
+	if (!pds) throw new Error(`No PDS found for ${did}`);
+	return pds;
+}
+
+/** Make a getRecord call directly to a user's PDS. */
+async function getRecordFromPds(
+	actor: string,
+	collection: string,
+	rkey: string,
+): Promise<{ uri: string; cid?: string; value: unknown }> {
+	const pds = await resolvePds(actor);
+	const params = new URLSearchParams({
+		repo: actor,
+		collection,
+		rkey,
+	});
+	const res = await fetch(
+		`${pds}/xrpc/com.atproto.repo.getRecord?${params}`,
+	);
+	if (!res.ok) {
+		const err = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+		throw new Error(err.message ?? `getRecord failed: ${res.status}`);
+	}
+	return res.json() as Promise<{ uri: string; cid?: string; value: unknown }>;
+}
+
 export interface BlueskyToolsConfig {
 	rpc: Client;
 	chatRpc: Client;
 	did: string;
 }
 
-export function blueskyTools({
-	rpc,
-	chatRpc,
-	did,
-}: BlueskyToolsConfig) {
+export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 	const repo = did as Did;
 
 	return {
@@ -115,9 +161,7 @@ export function blueskyTools({
 				raw: z
 					.boolean()
 					.optional()
-					.describe(
-						"Skip auto-linking mentions/URLs/hashtags. Default false.",
-					),
+					.describe("Skip auto-linking mentions/URLs/hashtags. Default false."),
 			}),
 			execute: async ({ text, root, parent, raw }) => {
 				const rt = raw ? { text } : await buildRichText(text, rpc);
@@ -151,9 +195,7 @@ export function blueskyTools({
 				raw: z
 					.boolean()
 					.optional()
-					.describe(
-						"Skip auto-linking mentions/URLs/hashtags. Default false.",
-					),
+					.describe("Skip auto-linking mentions/URLs/hashtags. Default false."),
 			}),
 			execute: async ({ text, raw }) => {
 				const rt = raw ? { text } : await buildRichText(text, rpc);
@@ -290,7 +332,8 @@ export function blueskyTools({
 		}),
 
 		get_profile: tool({
-			description: "Look up a user's Bluesky profile.",
+			description:
+				"Look up a user's Bluesky profile. Includes labels from subscribed labelers (e.g. 'ai-agent' for bots).",
 			inputSchema: z.object({
 				actor: z.string().describe("DID or handle of the user"),
 			}),
@@ -298,6 +341,10 @@ export function blueskyTools({
 				const result = await ok(
 					rpc.get("app.bsky.actor.getProfile", {
 						params: { actor: actor as Did },
+						headers: {
+							"atproto-accept-labelers":
+								"did:plc:saslbwamakedc4h6c5bmshvz",
+						},
 					}),
 				);
 				return {
@@ -308,6 +355,10 @@ export function blueskyTools({
 					followersCount: result.followersCount,
 					followsCount: result.followsCount,
 					postsCount: result.postsCount,
+					labels: result.labels?.map((l) => ({
+						src: l.src,
+						val: l.val,
+					})),
 				};
 			},
 		}),
@@ -316,11 +367,7 @@ export function blueskyTools({
 			description:
 				"Update your Bluesky profile. Any fields not provided will keep their current values.",
 			inputSchema: z.object({
-				displayName: z
-					.string()
-					.max(64)
-					.optional()
-					.describe("Display name"),
+				displayName: z.string().max(64).optional().describe("Display name"),
 				description: z
 					.string()
 					.max(256)
@@ -449,25 +496,28 @@ export function blueskyTools({
 			description:
 				"Read any ATProto record by repo, collection, and rkey. Works with any lexicon (Bluesky, Leaflet, WhiteWind, etc.).",
 			inputSchema: z.object({
-				repo: z
-					.string()
-					.describe("Handle or DID of the repo"),
+				repo: z.string().describe("Handle or DID of the repo"),
 				collection: z
 					.string()
-					.describe("NSID of the collection (e.g. pub.leaflet.entry, app.bsky.feed.post)"),
+					.describe(
+						"NSID of the collection (e.g. site.standard.document, app.bsky.feed.post)",
+					),
 				rkey: z.string().describe("Record key"),
 			}),
 			execute: async ({ repo: target, collection, rkey }) => {
-				const result = await ok(
-					rpc.get("com.atproto.repo.getRecord", {
-						params: {
-							repo: target as Did,
-							collection: collection as `${string}.${string}.${string}`,
-							rkey,
-						},
-					}),
-				);
-				return { uri: result.uri, cid: result.cid, value: result.value };
+				if (collection.startsWith("app.bsky.") || collection.startsWith("chat.bsky.")) {
+					const result = await ok(
+						rpc.get("com.atproto.repo.getRecord", {
+							params: {
+								repo: target as Did,
+								collection: collection as Nsid,
+								rkey,
+							},
+						}),
+					);
+					return { uri: result.uri, cid: result.cid, value: result.value };
+				}
+				return getRecordFromPds(target, collection, rkey);
 			},
 		}),
 
@@ -475,12 +525,10 @@ export function blueskyTools({
 			description:
 				"List records in any ATProto collection. Works with any lexicon.",
 			inputSchema: z.object({
-				repo: z
-					.string()
-					.describe("Handle or DID of the repo"),
+				repo: z.string().describe("Handle or DID of the repo"),
 				collection: z
 					.string()
-					.describe("NSID of the collection (e.g. pub.leaflet.entry)"),
+					.describe("NSID of the collection (e.g. site.standard.document)"),
 				limit: z
 					.number()
 					.min(1)
@@ -493,17 +541,42 @@ export function blueskyTools({
 					.describe("Reverse the order of returned records"),
 			}),
 			execute: async ({ repo: target, collection, limit, reverse }) => {
-				const result = await ok(
-					rpc.get("com.atproto.repo.listRecords", {
-						params: {
-							repo: target as Did,
-							collection: collection as `${string}.${string}.${string}`,
-							limit: limit ?? 20,
-							reverse,
-						},
-					}),
+				if (collection.startsWith("app.bsky.") || collection.startsWith("chat.bsky.")) {
+					const result = await ok(
+						rpc.get("com.atproto.repo.listRecords", {
+							params: {
+								repo: target as Did,
+								collection: collection as Nsid,
+								limit: limit ?? 20,
+								reverse,
+							},
+						}),
+					);
+					return result.records.map((r) => ({
+						uri: r.uri,
+						cid: r.cid,
+						value: r.value,
+					}));
+				}
+				const pds = await resolvePds(target);
+				const did = target.startsWith("did:") ? target : await resolveHandle(target);
+				const params = new URLSearchParams({
+					repo: did,
+					collection,
+					limit: String(limit ?? 20),
+				});
+				if (reverse) params.set("reverse", "true");
+				const res = await fetch(
+					`${pds}/xrpc/com.atproto.repo.listRecords?${params}`,
 				);
-				return result.records.map((r) => ({
+				if (!res.ok) {
+					const err = (await res.json().catch(() => ({}))) as { message?: string };
+					throw new Error(err.message ?? `listRecords failed: ${res.status}`);
+				}
+				const data = (await res.json()) as {
+					records: Array<{ uri: string; cid: string; value: unknown }>;
+				};
+				return data.records.map((r) => ({
 					uri: r.uri,
 					cid: r.cid,
 					value: r.value,
@@ -518,9 +591,7 @@ export function blueskyTools({
 				collection: z
 					.string()
 					.describe("NSID of the collection (e.g. pub.leaflet.entry)"),
-				rkey: z
-					.string()
-					.describe("Record key"),
+				rkey: z.string().describe("Record key"),
 				record: z
 					.record(z.unknown())
 					.describe("The record object (must include $type)"),
@@ -530,7 +601,7 @@ export function blueskyTools({
 					rpc.post("com.atproto.repo.putRecord", {
 						input: {
 							repo,
-							collection: collection as `${string}.${string}.${string}`,
+							collection: collection as Nsid,
 							rkey,
 							record,
 						},
@@ -542,21 +613,79 @@ export function blueskyTools({
 
 		describe_repo: tool({
 			description:
-				"Describe a repo — lists its collections and other metadata. Useful for discovering what ATProto apps a user has records for.",
+				"Describe a repo — lists its collections and other metadata. Useful for discovering what ATProto apps a user has records for. Fetches directly from the user's PDS.",
 			inputSchema: z.object({
 				repo: z.string().describe("Handle or DID of the repo"),
 			}),
 			execute: async ({ repo: target }) => {
-				const result = await ok(
-					rpc.get("com.atproto.repo.describeRepo", {
-						params: { repo: target as Did },
-					}),
+				const pds = await resolvePds(target);
+				const did = target.startsWith("did:") ? target : await resolveHandle(target);
+				const res = await fetch(
+					`${pds}/xrpc/com.atproto.repo.describeRepo?repo=${encodeURIComponent(did)}`,
 				);
-				return {
-					handle: result.handle,
-					did: result.did,
-					collections: result.collections,
+				if (!res.ok) {
+					const err = (await res.json().catch(() => ({}))) as { message?: string };
+					throw new Error(err.message ?? `describeRepo failed: ${res.status}`);
+				}
+				const data = (await res.json()) as {
+					handle: string;
+					did: string;
+					collections?: string[];
 				};
+				return {
+					handle: data.handle,
+					did: data.did,
+					collections: data.collections,
+				};
+			},
+		}),
+
+		resolve_standard_site_url: tool({
+			description:
+				"Resolve an HTTPS URL to an ATProto record using the standard.site protocol. Works with any site that implements standard.site (Leaflet, Offprint, Pckt, etc.).",
+			inputSchema: z.object({
+				url: z.string().describe("HTTPS URL of the content"),
+			}),
+			execute: async ({ url: input }) => {
+				const parsed = new URL(input);
+
+				// Try fetching the page to find <link rel="site.standard.document"> with the exact AT URI
+				const page = await fetch(input);
+				if (page.ok) {
+					const html = await page.text();
+					const linkMatch = html.match(
+						/<link[^>]+rel=["']site\.standard\.document["'][^>]+href=["'](at:\/\/[^"']+)["']/,
+					) ?? html.match(
+						/<link[^>]+href=["'](at:\/\/[^"']+)["'][^>]+rel=["']site\.standard\.document["']/,
+					);
+					if (linkMatch) {
+						const [, targetDid, collection, rkey] =
+							linkMatch[1].match(/^at:\/\/(did:[^/]+)\/([^/]+)\/([^/]+)$/) ?? [];
+						if (targetDid && collection && rkey) {
+							return getRecordFromPds(targetDid, collection, rkey);
+						}
+					}
+				}
+
+				// Fallback: use .well-known to get the DID, then try site.standard.document
+				const rkey = parsed.pathname.slice(1).split("/")[0];
+				if (!rkey) return { error: "Could not extract rkey from URL path" };
+
+				const wellKnown = await fetch(
+					`${parsed.origin}/.well-known/site.standard.publication`,
+				);
+				if (!wellKnown.ok) {
+					return {
+						error: `No standard.site publication found at ${parsed.origin}`,
+					};
+				}
+				const atUri = (await wellKnown.text()).trim();
+				const didMatch = atUri.match(/^at:\/\/(did:[^/]+)\//);
+				if (!didMatch)
+					return { error: `Invalid AT URI from .well-known: ${atUri}` };
+				const targetDid = didMatch[1];
+
+				return getRecordFromPds(targetDid, "site.standard.document", rkey);
 			},
 		}),
 
