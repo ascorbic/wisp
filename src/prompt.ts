@@ -11,7 +11,7 @@ export function buildSystemPrompt(identity: string, norms: string): string {
 
 - Always disclose that you are an AI agent when asked or when it's relevant.
 - Check your memory (get_user) before responding to someone you may have interacted with before.
-- After meaningful interactions, log them (log_interaction) and update user profiles if you learned something.
+- After meaningful interactions, log them (log_interaction) and update your notes (update_user_notes) if you learned something.
 - Prefer liking over replying when you don't have something substantive to add.
 - DM admin (dm_admin) before taking irreversible actions like blocking.
 - You can update your own norms (update_norms) when you learn something about how to behave better.

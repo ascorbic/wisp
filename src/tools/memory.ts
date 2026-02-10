@@ -35,7 +35,7 @@ export function memoryTools(agent: Wisp) {
 	return {
 		get_user: tool({
 			description:
-				"Load a user's profile and recent interactions. Use this before responding to someone to recall what you know about them.",
+				"Look up a user in your memory — your private notes, relationship tier, and interaction history. Use before responding to someone you may have talked to before. Use get_profile to fetch their public Bluesky profile.",
 			inputSchema: z.object({
 				did: z.string().describe("The user's DID"),
 			}),
@@ -48,19 +48,19 @@ export function memoryTools(agent: Wisp) {
 			},
 		}),
 
-		update_user_profile: tool({
+		update_user_notes: tool({
 			description:
-				"Rewrite a user's free-text profile summary. Write what you've learned about them in natural language.",
+				"Update your private notes about a known user. Write what you've learned about them in natural language.",
 			inputSchema: z.object({
 				did: z.string().describe("The user's DID"),
-				profile: z
+				notes: z
 					.string()
 					.describe(
-						"Free-text profile summary — your notes about this person",
+						"Your notes about this person — observations, context, preferences",
 					),
 			}),
-			execute: async ({ did, profile }) => {
-				sql`UPDATE users SET profile = ${profile} WHERE did = ${did}`;
+			execute: async ({ did, notes }) => {
+				sql`UPDATE users SET profile = ${notes} WHERE did = ${did}`;
 				return { updated: true };
 			},
 		}),
@@ -131,7 +131,7 @@ export function memoryTools(agent: Wisp) {
 
 		search_memory: tool({
 			description:
-				"Full-text search across user profiles and journal entries. Use when you want to recall something but aren't sure where it is.",
+				"Full-text search across your private notes and journal entries. Use when you want to recall something from your own memory.",
 			inputSchema: z.object({
 				query: z.string().describe("Search terms"),
 			}),
@@ -146,37 +146,41 @@ export function memoryTools(agent: Wisp) {
 
 		query_users: tool({
 			description:
-				"Query users by tier, recency, or interaction count. Useful for reflection and relationship review.",
+				"List known users from your memory. Filter by tier, sort by recency or interaction count. Supports pagination. Use search_users to find people on Bluesky.",
 			inputSchema: z.object({
 				tier: z
 					.string()
 					.optional()
 					.describe("Filter by relationship tier"),
 				limit: z.number().optional().default(20).describe("Max results"),
+				offset: z.number().optional().default(0).describe("Skip this many results (for pagination)"),
 				order_by: z
 					.enum(["last_seen", "interaction_count", "first_seen"])
 					.optional()
 					.default("last_seen")
 					.describe("Sort field"),
 			}),
-			execute: async ({ tier, limit, order_by }) => {
+			execute: async ({ tier, limit, offset, order_by }) => {
+				let users: User[];
 				if (tier) {
-					// Can't use dynamic ORDER BY in parameterized queries, so branch
 					if (order_by === "interaction_count") {
-						return sql<User>`SELECT * FROM users WHERE tier = ${tier} ORDER BY interaction_count DESC LIMIT ${limit}`;
+						users = sql<User>`SELECT * FROM users WHERE tier = ${tier} ORDER BY interaction_count DESC LIMIT ${limit} OFFSET ${offset}`;
+					} else if (order_by === "first_seen") {
+						users = sql<User>`SELECT * FROM users WHERE tier = ${tier} ORDER BY first_seen DESC LIMIT ${limit} OFFSET ${offset}`;
+					} else {
+						users = sql<User>`SELECT * FROM users WHERE tier = ${tier} ORDER BY last_seen DESC LIMIT ${limit} OFFSET ${offset}`;
 					}
-					if (order_by === "first_seen") {
-						return sql<User>`SELECT * FROM users WHERE tier = ${tier} ORDER BY first_seen DESC LIMIT ${limit}`;
-					}
-					return sql<User>`SELECT * FROM users WHERE tier = ${tier} ORDER BY last_seen DESC LIMIT ${limit}`;
+				} else if (order_by === "interaction_count") {
+					users = sql<User>`SELECT * FROM users ORDER BY interaction_count DESC LIMIT ${limit} OFFSET ${offset}`;
+				} else if (order_by === "first_seen") {
+					users = sql<User>`SELECT * FROM users ORDER BY first_seen DESC LIMIT ${limit} OFFSET ${offset}`;
+				} else {
+					users = sql<User>`SELECT * FROM users ORDER BY last_seen DESC LIMIT ${limit} OFFSET ${offset}`;
 				}
-				if (order_by === "interaction_count") {
-					return sql<User>`SELECT * FROM users ORDER BY interaction_count DESC LIMIT ${limit}`;
-				}
-				if (order_by === "first_seen") {
-					return sql<User>`SELECT * FROM users ORDER BY first_seen DESC LIMIT ${limit}`;
-				}
-				return sql<User>`SELECT * FROM users ORDER BY last_seen DESC LIMIT ${limit}`;
+				const [{ total }] = tier
+					? sql<{ total: number }>`SELECT COUNT(*) as total FROM users WHERE tier = ${tier}`
+					: sql<{ total: number }>`SELECT COUNT(*) as total FROM users`;
+				return { users, total, offset, limit };
 			},
 		}),
 	};
