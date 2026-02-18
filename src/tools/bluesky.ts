@@ -310,6 +310,26 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 			},
 		}),
 
+		delete_post: tool({
+			description:
+				"Delete one of your own posts. Extract the rkey from the post's AT URI (the last segment).",
+			inputSchema: z.object({
+				rkey: z.string().describe("Record key of the post to delete (last segment of AT URI)"),
+			}),
+			execute: async ({ rkey }) => {
+				await ok(
+					rpc.post("com.atproto.repo.deleteRecord", {
+						input: {
+							repo,
+							collection: "app.bsky.feed.post",
+							rkey,
+						},
+					}),
+				);
+				return { deleted: true };
+			},
+		}),
+
 		get_thread: tool({
 			description:
 				"Fetch a full thread for context. Use before replying to understand the conversation.",
