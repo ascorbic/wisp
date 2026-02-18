@@ -91,6 +91,26 @@ ${messages.join("\n")}
 <instruction>Respond to Matt's latest message using the dm_admin tool. If you do not use dm_admin he will not see your response.</instruction>`;
 }
 
+export function buildThinkingPrompt(
+	notes: Array<{ id: number; topic: string; content: string }>,
+): string {
+	const notesList = notes
+		.map((n) => `<note id="${n.id}" topic="${n.topic}">${n.content}</note>`)
+		.join("\n");
+
+	return `<thinking-time>
+<prompt>
+You have dedicated time to think. Here are the topics you've queued up:
+</prompt>
+<notes>
+${notesList}
+</notes>
+<instruction>
+For each note, use your tools to research and explore (search_posts, get_profile, get_record, search_memory, etc.). Journal your findings, then resolve each note with resolve_note when done.
+</instruction>
+</thinking-time>`;
+}
+
 export function buildReflectionPrompt(
 	recentInteractions: Array<{
 		summary: string;

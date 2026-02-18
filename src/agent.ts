@@ -17,10 +17,12 @@ import {
 	formatEvent,
 	formatAdminDm,
 	buildReflectionPrompt,
+	buildThinkingPrompt,
 } from "./prompt.js";
 import SEED_IDENTITY from "./seed-identity.txt" with { type: "txt" };
 
 const REFLECTION_INTERVAL = 6 * 60 * 60 * 1_000; // 6 hours
+const THINKING_INTERVAL = 2 * 60 * 60 * 1_000; // 2 hours
 const CURSOR_PERSIST_INTERVAL = 30_000; // persist cursor every 30s
 const DM_POLL_INTERVAL = 60_000; // check admin DMs every 60s
 
@@ -60,6 +62,9 @@ export class Wisp extends DurableObject<Env> {
 	private eventsReceived = 0;
 	private eventsHandled = 0;
 	private connectedAt: number | undefined;
+	private epsWindowStart = 0;
+	private epsWindowCount = 0;
+	private epsPrevRate = 0;
 
 	/** Tagged template wrapper around ctx.storage.sql.exec. Values are bound as numbered parameters (?1, ?2, ...), never interpolated. */
 	sql<T = Record<string, string | number | boolean | null>>(
@@ -146,6 +151,7 @@ export class Wisp extends DurableObject<Env> {
 					cursorAge,
 					eventsReceived: this.eventsReceived,
 					eventsHandled: this.eventsHandled,
+					eventsPerSecond: Math.round(this.getEps() * 100) / 100,
 				},
 				stats: {
 					users: userCount[0]?.count ?? 0,
@@ -192,6 +198,13 @@ export class Wisp extends DurableObject<Env> {
 			await this.runReflection();
 		}
 
+		// Check if thinking time is due
+		const lastThinking =
+			(await this.ctx.storage.get<number>("last_thinking")) ?? 0;
+		if (Date.now() - lastThinking > THINKING_INTERVAL) {
+			await this.runThinkingTime();
+		}
+
 		this.scheduleNextAlarm();
 	}
 
@@ -217,6 +230,7 @@ export class Wisp extends DurableObject<Env> {
 			onEvent: async (event) => {
 				this.cursor = event.time_us;
 				this.eventsReceived++;
+				this.tickEps();
 				this.maybePersistCursor();
 
 				if (this.isRelevantEvent(event)) {
@@ -449,6 +463,44 @@ export class Wisp extends DurableObject<Env> {
 
 		const prompt = buildReflectionPrompt(recentInteractions);
 		await this.runToolLoop(prompt);
+	}
+
+	private async runThinkingTime() {
+		const notes = this.sql<{
+			id: number;
+			topic: string;
+			content: string;
+		}>`SELECT id, topic, content FROM notes_to_self WHERE status = 'pending' ORDER BY created_at ASC`;
+
+		if (notes.length === 0) return;
+
+		await this.ctx.storage.put("last_thinking", Date.now());
+		const prompt = buildThinkingPrompt(notes);
+		await this.runToolLoop(prompt);
+	}
+
+	// --- EPS tracking ---
+
+	private tickEps() {
+		this.epsWindowCount++;
+		if (this.epsWindowStart === 0) {
+			this.epsWindowStart = Date.now();
+		} else if (this.epsWindowCount % 1000 === 0) {
+			const now = Date.now();
+			if (now - this.epsWindowStart >= 60_000) {
+				this.epsPrevRate = this.epsWindowCount / ((now - this.epsWindowStart) / 1000);
+				this.epsWindowCount = 0;
+				this.epsWindowStart = now;
+			}
+		}
+	}
+
+	private getEps(): number {
+		const now = Date.now();
+		if (this.epsWindowStart === 0) return 0;
+		const elapsed = (now - this.epsWindowStart) / 1000;
+		if (elapsed < 5) return this.epsPrevRate;
+		return this.epsWindowCount / elapsed;
 	}
 
 	// --- Cursor persistence ---

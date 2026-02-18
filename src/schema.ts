@@ -32,6 +32,15 @@ export function migrate(sql: TemplateLiteralSQL) {
 		lastActivity INTEGER
 	)`;
 
+	sql`CREATE TABLE IF NOT EXISTS notes_to_self (
+		id INTEGER PRIMARY KEY,
+		topic TEXT,
+		content TEXT,
+		status TEXT DEFAULT 'pending',
+		created_at INTEGER,
+		completed_at INTEGER
+	)`;
+
 	// FTS5 virtual tables for search
 	sql`CREATE VIRTUAL TABLE IF NOT EXISTS users_fts USING fts5(
 		handle, profile, content=users, content_rowid=rowid

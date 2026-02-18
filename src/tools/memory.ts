@@ -29,6 +29,15 @@ interface JournalEntry {
 	created_at: number;
 }
 
+interface NoteToSelf {
+	id: number;
+	topic: string;
+	content: string;
+	status: string;
+	created_at: number;
+	completed_at: number | null;
+}
+
 export function memoryTools(agent: Wisp) {
 	const sql = agent.sql.bind(agent);
 
@@ -181,6 +190,46 @@ export function memoryTools(agent: Wisp) {
 					? sql<{ total: number }>`SELECT COUNT(*) as total FROM users WHERE tier = ${tier}`
 					: sql<{ total: number }>`SELECT COUNT(*) as total FROM users`;
 				return { users, total, offset, limit };
+			},
+		}),
+
+		note_to_self: tool({
+			description:
+				"Queue a topic to think about later during your next thinking time. Use when something comes up that you want to research or explore but shouldn't do right now.",
+			inputSchema: z.object({
+				topic: z.string().describe("Short label for the note"),
+				content: z
+					.string()
+					.describe("What you want to think about or investigate"),
+			}),
+			execute: async ({ topic, content }) => {
+				const now = Date.now();
+				sql`INSERT INTO notes_to_self (topic, content, created_at) VALUES (${topic}, ${content}, ${now})`;
+				return { queued: true };
+			},
+		}),
+
+		get_notes_to_self: tool({
+			description:
+				"List your pending notes to self — topics you've queued for later thinking.",
+			inputSchema: z.object({}),
+			execute: async () => {
+				const notes =
+					sql<NoteToSelf>`SELECT * FROM notes_to_self WHERE status = 'pending' ORDER BY created_at ASC`;
+				return { notes };
+			},
+		}),
+
+		resolve_note: tool({
+			description:
+				"Mark a note to self as done after you've thought about it and journaled your findings.",
+			inputSchema: z.object({
+				id: z.number().describe("The note ID to resolve"),
+			}),
+			execute: async ({ id }) => {
+				const now = Date.now();
+				sql`UPDATE notes_to_self SET status = 'done', completed_at = ${now} WHERE id = ${id}`;
+				return { resolved: true };
 			},
 		}),
 	};
