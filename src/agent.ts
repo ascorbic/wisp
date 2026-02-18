@@ -15,10 +15,13 @@ import { identityTools } from "./tools/identity.js";
 import {
 	buildSystemPrompt,
 	formatEvent,
+	formatContext,
 	formatAdminDm,
 	buildReflectionPrompt,
 	buildThinkingPrompt,
 } from "./prompt.js";
+import { fetchEventContext } from "./context.js";
+import { calculateCost } from "./pricing.js";
 import SEED_IDENTITY from "./seed-identity.txt" with { type: "txt" };
 
 const REFLECTION_INTERVAL = 6 * 60 * 60 * 1_000; // 6 hours
@@ -305,25 +308,28 @@ export class Wisp extends DurableObject<Env> {
 
 	private async handleEvent(event: JetstreamEvent) {
 		try {
-			let handle: string | undefined;
-			try {
-				const profile = await ok(
-					rpc.get("app.bsky.actor.getProfile", {
-						params: { actor: event.did as Did },
-					}),
-				);
-				handle = profile.handle;
+			const ctx = await fetchEventContext(event, {
+				rpc,
+				sql: this.sql.bind(this),
+			});
 
+			const handle = ctx.authorProfile?.handle;
+			if (handle) {
 				this
 					.sql`INSERT INTO users (did, handle, first_seen, last_seen, interaction_count)
 					VALUES (${event.did}, ${handle}, ${Date.now()}, ${Date.now()}, 0)
 					ON CONFLICT(did) DO UPDATE SET handle = ${handle}, last_seen = ${Date.now()}`;
-			} catch {
-				// Non-critical
 			}
 
-			const prompt = formatEvent(event, { handle });
-			await this.runToolLoop(prompt);
+			const eventPrompt = formatEvent(event, { handle });
+			const contextPrompt = formatContext(ctx);
+			const prompt = contextPrompt
+				? `${eventPrompt}\n\n${contextPrompt}`
+				: eventPrompt;
+			if (contextPrompt) {
+				console.log("Event context:", contextPrompt);
+			}
+			await this.runEventLoop(prompt);
 
 			if (
 				event.kind === "commit" &&
@@ -389,11 +395,86 @@ export class Wisp extends DurableObject<Env> {
 				}
 			}
 
+			const cost = calculateCost(env.MODEL, result.usage);
 			console.log(
-				`Tool loop done: ${result.steps.length} steps, ${result.usage.inputTokens ?? 0}in/${result.usage.outputTokens ?? 0}out (${result.usage.totalTokens} total)`,
+				`Tool loop done: ${result.steps.length} steps, ${result.usage.inputTokens ?? 0}in/${result.usage.outputTokens ?? 0}out${cost ? ` · $${cost.total.toFixed(4)} (in: $${cost.input.toFixed(4)}, out: $${cost.output.toFixed(4)})` : ""}`,
 			);
 		} catch (err) {
 			console.error("Tool loop error:", err);
+		}
+	}
+
+	// --- Event loop (pre-fetched context, curated tools) ---
+
+	private async runEventLoop(prompt: string) {
+		const identity =
+			(await this.ctx.storage.get<string>("identity")) ?? SEED_IDENTITY;
+		const norms = (await this.ctx.storage.get<string>("norms")) ?? "";
+		const system = buildSystemPrompt(identity, norms);
+
+		// Exclude tools that are pre-fetched or already in the system prompt
+		const {
+			get_user: _getUser,
+			search_memory: _searchMemory,
+			query_users: _queryUsers,
+			get_notes_to_self: _getNotes,
+			...eventMemoryTools
+		} = memoryTools(this);
+
+		const {
+			get_thread: _getThread,
+			get_profile: _getProfile,
+			...eventBlueskyTools
+		} = blueskyTools({ rpc, chatRpc, did: this.agentDid });
+
+		const {
+			read_identity: _readIdentity,
+			read_norms: _readNorms,
+			...eventIdentityTools
+		} = identityTools(this);
+
+		const tools = {
+			...eventMemoryTools,
+			...eventBlueskyTools,
+			...eventIdentityTools,
+		};
+
+		try {
+			console.log("Event loop start:", prompt.slice(0, 200));
+
+			const result = await generateText({
+				model: aigateway(unified(env.MODEL)),
+				system,
+				prompt,
+				tools,
+				stopWhen: stepCountIs(3),
+			});
+
+			for (const step of result.steps) {
+				for (const call of step.toolCalls) {
+					console.log(
+						`Tool call: ${call.toolName}(${JSON.stringify("args" in call ? call.args : {})})`,
+					);
+				}
+				for (const toolResult of step.toolResults) {
+					const output = JSON.stringify(
+						"result" in toolResult ? toolResult.result : {},
+					);
+					console.log(
+						`Tool result: ${toolResult.toolName} → ${output.slice(0, 500)}`,
+					);
+				}
+				if (step.text) {
+					console.log("Step text:", step.text.slice(0, 500));
+				}
+			}
+
+			const cost = calculateCost(env.MODEL, result.usage);
+			console.log(
+				`Event loop done: ${result.steps.length} steps, ${result.usage.inputTokens ?? 0}in/${result.usage.outputTokens ?? 0}out${cost ? ` · $${cost.total.toFixed(4)} (in: $${cost.input.toFixed(4)}, out: $${cost.output.toFixed(4)})` : ""}`,
+			);
+		} catch (err) {
+			console.error("Event loop error:", err);
 		}
 	}
 
