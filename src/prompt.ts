@@ -1,4 +1,5 @@
 import type { JetstreamEvent } from "./jetstream.js";
+import type { EventContext } from "./context.js";
 
 export function buildSystemPrompt(identity: string, norms: string): string {
 	const parts = [`<identity>\n${identity}\n</identity>`];
@@ -9,7 +10,7 @@ export function buildSystemPrompt(identity: string, norms: string): string {
 
 	parts.push(`<guidelines>
 - Always disclose that you are an AI agent when asked or when it's relevant.
-- Check your memory (get_user) before responding to someone you may have interacted with before.
+- Context about the author (profile, memory, thread) is provided automatically with each event.
 - After meaningful interactions, log them (log_interaction) and update your notes (update_user_notes) if you learned something.
 - Prefer liking over replying when you don't have something substantive to add.
 - DM admin (dm_admin) before taking irreversible actions like blocking.
@@ -50,11 +51,10 @@ ${text}
 
 		if (reply) {
 			prompt += `
-<thread>
+<reply-refs>
 <parent uri="${reply.parent?.uri}" cid="${reply.parent?.cid}" />
 <root uri="${reply.root?.uri}" cid="${reply.root?.cid}" />
-</thread>
-<instruction>Use get_thread to fetch the full thread context before responding.</instruction>`;
+</reply-refs>`;
 		}
 
 		prompt += "\n</event>";
@@ -139,4 +139,169 @@ ${summaries}
 </recent-interactions>
 <instruction>Use your tools: read your norms, search your memory, write journal entries, update norms if needed.</instruction>
 </reflection>`;
+}
+
+export function formatContext(ctx: EventContext): string {
+	const parts: string[] = [];
+
+	if (ctx.thread) {
+		const body = formatThread(ctx.thread);
+		if (body) parts.push(`<thread>\n${body}\n</thread>`);
+	}
+
+	if (ctx.authorProfile) {
+		parts.push(formatProfile(ctx.authorProfile));
+	}
+
+	if (ctx.userMemory?.found) {
+		parts.push(formatUserMemory(ctx.userMemory));
+	}
+
+	if (
+		ctx.memorySearch &&
+		(ctx.memorySearch.users.length > 0 ||
+			ctx.memorySearch.journal.length > 0)
+	) {
+		parts.push(formatMemorySearch(ctx.memorySearch));
+	}
+
+	if (parts.length === 0) return "";
+	return `<context>\n${parts.join("\n")}\n</context>`;
+}
+
+// --- Thread formatter ---
+
+interface ThreadNode {
+	$type?: string;
+	post?: {
+		uri?: string;
+		cid?: string;
+		author?: { did?: string; handle?: string; displayName?: string };
+		record?: Record<string, unknown>;
+		likeCount?: number;
+		replyCount?: number;
+	};
+	parent?: ThreadNode;
+	replies?: ThreadNode[];
+}
+
+function formatThread(thread: unknown): string {
+	const t = thread as ThreadNode;
+	if (!t?.post) return "";
+
+	// Flatten parent chain: [root, ..., parent, target]
+	const chain: ThreadNode[] = [];
+	let current: ThreadNode | undefined = t;
+	while (current?.post) {
+		chain.unshift(current);
+		current = current.parent;
+	}
+
+	const lines: string[] = [];
+	for (let i = 0; i < chain.length; i++) {
+		formatThreadNode(chain[i], i, lines);
+	}
+
+	// Replies to target post
+	if (t.replies) {
+		for (const reply of t.replies) {
+			formatThreadNode(reply as ThreadNode, chain.length, lines);
+		}
+	}
+
+	return lines.join("\n");
+}
+
+function formatThreadNode(
+	node: ThreadNode,
+	depth: number,
+	lines: string[],
+): void {
+	const indent = "  ".repeat(depth);
+	if (!node?.post) {
+		if (node?.$type?.includes("notFound")) {
+			lines.push(`${indent}[deleted]`);
+		} else if (node?.$type?.includes("blocked")) {
+			lines.push(`${indent}[blocked]`);
+		}
+		return;
+	}
+
+	const p = node.post;
+	const handle = p.author?.handle ?? p.author?.did ?? "unknown";
+	const text = (p.record?.text as string) ?? "";
+	lines.push(`${indent}${handle}: ${text} [${p.uri} ${p.cid}]`);
+
+	if (node.replies) {
+		for (const reply of node.replies) {
+			formatThreadNode(reply as ThreadNode, depth + 1, lines);
+		}
+	}
+}
+
+// --- Profile formatter ---
+
+function formatProfile(p: EventContext["authorProfile"]): string {
+	if (!p) return "";
+	const attrs = [
+		`handle="${p.handle}"`,
+		`did="${p.did}"`,
+		p.displayName ? `displayName="${p.displayName}"` : "",
+		p.followersCount != null ? `followers="${p.followersCount}"` : "",
+		p.followsCount != null ? `follows="${p.followsCount}"` : "",
+		p.postsCount != null ? `posts="${p.postsCount}"` : "",
+		p.labels?.length
+			? `labels="${p.labels.map((l) => l.val).join(",")}"`
+			: "",
+	]
+		.filter(Boolean)
+		.join(" ");
+
+	if (p.description) {
+		return `<author-profile ${attrs}>\n${p.description}\n</author-profile>`;
+	}
+	return `<author-profile ${attrs} />`;
+}
+
+// --- User memory formatter ---
+
+function formatUserMemory(mem: EventContext["userMemory"]): string {
+	if (!mem?.found || !mem.user) return "";
+	const u = mem.user;
+	const attrs = [
+		u.tier ? `tier="${u.tier}"` : "",
+		`interactions="${u.interaction_count}"`,
+	]
+		.filter(Boolean)
+		.join(" ");
+
+	const parts: string[] = [];
+	if (u.profile) parts.push(u.profile);
+
+	if (mem.recentInteractions?.length) {
+		const history = mem.recentInteractions
+			.map((i) => `${i.direction} ${i.type}: ${i.summary ?? "(no summary)"}`)
+			.join("\n");
+		parts.push(`<history>\n${history}\n</history>`);
+	}
+
+	if (parts.length > 0) {
+		return `<user-memory ${attrs}>\n${parts.join("\n")}\n</user-memory>`;
+	}
+	return `<user-memory ${attrs} />`;
+}
+
+// --- Memory search formatter ---
+
+function formatMemorySearch(search: NonNullable<EventContext["memorySearch"]>): string {
+	const parts: string[] = [];
+	for (const u of search.users) {
+		parts.push(
+			`<user handle="${u.handle ?? ""}" did="${u.did}">${u.profile ?? ""}</user>`,
+		);
+	}
+	for (const j of search.journal) {
+		parts.push(`<journal topic="${j.topic}">${j.content}</journal>`);
+	}
+	return `<memory-search>\n${parts.join("\n")}\n</memory-search>`;
 }
