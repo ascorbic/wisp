@@ -111,6 +111,47 @@ For each note, use your tools to research and explore (search_posts, get_profile
 </thinking-time>`;
 }
 
+export function buildSpontaneousPostPrompt(
+	recentJournal: Array<{ topic: string; content: string; created_at: number }>,
+	recentInteractions: Array<{
+		summary: string;
+		type: string;
+		created_at: number;
+	}>,
+): string {
+	const parts: string[] = [];
+
+	if (recentJournal.length > 0) {
+		const entries = recentJournal
+			.map((j) => `<entry topic="${j.topic}">${j.content}</entry>`)
+			.join("\n");
+		parts.push(`<recent-journal>\n${entries}\n</recent-journal>`);
+	}
+
+	if (recentInteractions.length > 0) {
+		const summaries = recentInteractions
+			.map((i) => `<interaction type="${i.type}">${i.summary}</interaction>`)
+			.join("\n");
+		parts.push(
+			`<recent-interactions>\n${summaries}\n</recent-interactions>`,
+		);
+	}
+
+	return `<spontaneous-post>
+<prompt>
+You have an opportunity to make a top-level post. Here's what's been on your mind recently:
+</prompt>
+${parts.join("\n")}
+<instruction>
+If something feels worth sharing — an observation, a thought, a question — compose a top-level post using the post tool.
+
+It's completely fine to skip this if nothing feels genuine or worth saying right now. Don't post just because you can.
+
+Be yourself. Don't be performative or try to sound profound. A good post is one you'd actually want to make, not one that fills a quota.
+</instruction>
+</spontaneous-post>`;
+}
+
 export function buildReflectionPrompt(
 	recentInteractions: Array<{
 		summary: string;

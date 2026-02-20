@@ -19,6 +19,7 @@ import {
 	formatAdminDm,
 	buildReflectionPrompt,
 	buildThinkingPrompt,
+	buildSpontaneousPostPrompt,
 } from "./prompt.js";
 import { fetchEventContext } from "./context.js";
 import { calculateCost } from "./pricing.js";
@@ -26,6 +27,8 @@ import SEED_IDENTITY from "./seed-identity.txt" with { type: "txt" };
 
 const REFLECTION_INTERVAL = 6 * 60 * 60 * 1_000; // 6 hours
 const THINKING_INTERVAL = 2 * 60 * 60 * 1_000; // 2 hours
+const POST_MIN_INTERVAL = 3 * 60 * 60 * 1_000; // 3 hours
+const POST_MAX_INTERVAL = 6 * 60 * 60 * 1_000; // 6 hours
 const CURSOR_PERSIST_INTERVAL = 30_000; // persist cursor every 30s
 const DM_POLL_INTERVAL = 60_000; // check admin DMs every 60s
 
@@ -206,6 +209,15 @@ export class Wisp extends DurableObject<Env> {
 			(await this.ctx.storage.get<number>("last_thinking")) ?? 0;
 		if (Date.now() - lastThinking > THINKING_INTERVAL) {
 			await this.runThinkingTime();
+		}
+
+		// Check if spontaneous post is due
+		const nextPostTime = await this.ctx.storage.get<number>("next_post_time");
+		if (!nextPostTime) {
+			await this.scheduleNextPost();
+		} else if (Date.now() >= nextPostTime) {
+			await this.runSpontaneousPost();
+			await this.scheduleNextPost();
 		}
 
 		this.scheduleNextAlarm();
@@ -558,6 +570,32 @@ export class Wisp extends DurableObject<Env> {
 		await this.ctx.storage.put("last_thinking", Date.now());
 		const prompt = buildThinkingPrompt(notes);
 		await this.runToolLoop(prompt);
+	}
+
+	// --- Spontaneous posting ---
+
+	private async runSpontaneousPost() {
+		const recentJournal = this.sql<{
+			topic: string;
+			content: string;
+			created_at: number;
+		}>`SELECT topic, content, created_at FROM journal ORDER BY created_at DESC LIMIT 10`;
+
+		const recentInteractions = this.sql<{
+			summary: string;
+			type: string;
+			created_at: number;
+		}>`SELECT summary, type, created_at FROM interactions ORDER BY created_at DESC LIMIT 10`;
+
+		const prompt = buildSpontaneousPostPrompt(recentJournal, recentInteractions);
+		await this.runToolLoop(prompt);
+	}
+
+	private async scheduleNextPost() {
+		const delay = POST_MIN_INTERVAL + Math.random() * (POST_MAX_INTERVAL - POST_MIN_INTERVAL);
+		const nextTime = Date.now() + delay;
+		await this.ctx.storage.put("next_post_time", nextTime);
+		console.log(`Next spontaneous post scheduled for ${new Date(nextTime).toISOString()}`);
 	}
 
 	// --- EPS tracking ---
