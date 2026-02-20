@@ -169,6 +169,11 @@ export class Wisp extends DurableObject<Env> {
 			});
 		}
 
+		if (url.pathname === "/post" && request.method === "POST") {
+			await this.runSpontaneousPost();
+			return new Response("Spontaneous post complete");
+		}
+
 		if (url.pathname === "/reflect" && request.method === "POST") {
 			await this.runReflection();
 			return new Response("Reflection complete");
