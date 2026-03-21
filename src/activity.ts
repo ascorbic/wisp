@@ -91,10 +91,7 @@ function summarizeToolCall(name: string, args: Record<string, unknown>): string 
 }
 
 /** Record tool calls from a completed generateText result. */
-export function recordActivity(
-	sql: SqlFn,
-	steps: Array<{ toolCalls: ToolCall[] }>,
-): void {
+export function recordActivity(sql: SqlFn, steps: Array<{ toolCalls: ToolCall[] }>): void {
 	const now = Date.now();
 
 	// Prune old entries

@@ -5,8 +5,7 @@ import type { Wisp } from "../agent.js";
 export function identityTools(agent: Wisp) {
 	return {
 		read_identity: tool({
-			description:
-				"Read your identity text — who you are, your core values, your creator.",
+			description: "Read your identity text — who you are, your core values, your creator.",
 			inputSchema: z.object({}),
 			execute: async () => {
 				const identity = await agent.getKv<string>("identity");
@@ -30,9 +29,7 @@ export function identityTools(agent: Wisp) {
 			inputSchema: z.object({
 				norms: z
 					.string()
-					.describe(
-						"Your complete updated norms text. This replaces the current norms entirely.",
-					),
+					.describe("Your complete updated norms text. This replaces the current norms entirely."),
 			}),
 			execute: async ({ norms }) => {
 				await agent.putKv("norms", norms);

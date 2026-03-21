@@ -12,6 +12,7 @@ Autonomous AI agent on Bluesky, running on Cloudflare Workers + Durable Objects.
 ## Architecture
 
 Single Durable Object (`Wisp`) handles everything:
+
 - Jetstream WebSocket consumer (raw WS, not `@atcute/jetstream` — partysocket doesn't fit DO lifecycle)
 - LLM tool loop: prompt -> model -> execute tool calls -> loop (max 8 steps)
 - SQLite for structured state (users, interactions, journal, tracked_threads)

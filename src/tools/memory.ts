@@ -51,8 +51,7 @@ export function memoryTools(agent: Wisp) {
 			execute: async ({ did }) => {
 				const [user] = sql<User>`SELECT * FROM users WHERE did = ${did}`;
 				if (!user) return { found: false };
-				const interactions =
-					sql<Interaction>`SELECT * FROM interactions WHERE user_did = ${did} ORDER BY created_at DESC LIMIT 20`;
+				const interactions = sql<Interaction>`SELECT * FROM interactions WHERE user_did = ${did} ORDER BY created_at DESC LIMIT 20`;
 				return { found: true, user, recentInteractions: interactions };
 			},
 		}),
@@ -64,9 +63,7 @@ export function memoryTools(agent: Wisp) {
 				did: z.string().describe("The user's DID"),
 				notes: z
 					.string()
-					.describe(
-						"Your notes about this person — observations, context, preferences",
-					),
+					.describe("Your notes about this person — observations, context, preferences"),
 			}),
 			execute: async ({ did, notes }) => {
 				sql`UPDATE users SET profile = ${notes} WHERE did = ${did}`;
@@ -88,23 +85,13 @@ export function memoryTools(agent: Wisp) {
 		}),
 
 		log_interaction: tool({
-			description:
-				"Record an interaction with a user. Call this after each meaningful exchange.",
+			description: "Record an interaction with a user. Call this after each meaningful exchange.",
 			inputSchema: z.object({
 				user_did: z.string().describe("The user's DID"),
-				direction: z
-					.enum(["inbound", "outbound"])
-					.describe("Direction of the interaction"),
-				type: z
-					.enum(["mention", "reply", "like", "follow", "dm"])
-					.describe("Type of interaction"),
-				uri: z
-					.string()
-					.optional()
-					.describe("AT URI of the relevant record"),
-				summary: z
-					.string()
-					.describe("One-line summary of the interaction"),
+				direction: z.enum(["inbound", "outbound"]).describe("Direction of the interaction"),
+				type: z.enum(["mention", "reply", "like", "follow", "dm"]).describe("Type of interaction"),
+				uri: z.string().optional().describe("AT URI of the relevant record"),
+				summary: z.string().describe("One-line summary of the interaction"),
 			}),
 			execute: async ({ user_did, direction, type, uri, summary }) => {
 				const now = Date.now();
@@ -145,10 +132,10 @@ export function memoryTools(agent: Wisp) {
 				query: z.string().describe("Search terms"),
 			}),
 			execute: async ({ query }) => {
-				const users =
-					sql<Pick<User, "did" | "handle" | "profile">>`SELECT u.did, u.handle, u.profile FROM users_fts f JOIN users u ON f.rowid = u.rowid WHERE users_fts MATCH ${query} LIMIT 10`;
-				const entries =
-					sql<JournalEntry>`SELECT j.* FROM journal_fts f JOIN journal j ON f.rowid = j.rowid WHERE journal_fts MATCH ${query} ORDER BY j.created_at DESC LIMIT 10`;
+				const users = sql<
+					Pick<User, "did" | "handle" | "profile">
+				>`SELECT u.did, u.handle, u.profile FROM users_fts f JOIN users u ON f.rowid = u.rowid WHERE users_fts MATCH ${query} LIMIT 10`;
+				const entries = sql<JournalEntry>`SELECT j.* FROM journal_fts f JOIN journal j ON f.rowid = j.rowid WHERE journal_fts MATCH ${query} ORDER BY j.created_at DESC LIMIT 10`;
 				return { users, journal: entries };
 			},
 		}),
@@ -157,12 +144,13 @@ export function memoryTools(agent: Wisp) {
 			description:
 				"List known users from your memory. Filter by tier, sort by recency or interaction count. Supports pagination. Use search_users to find people on Bluesky.",
 			inputSchema: z.object({
-				tier: z
-					.string()
-					.optional()
-					.describe("Filter by relationship tier"),
+				tier: z.string().optional().describe("Filter by relationship tier"),
 				limit: z.number().optional().default(20).describe("Max results"),
-				offset: z.number().optional().default(0).describe("Skip this many results (for pagination)"),
+				offset: z
+					.number()
+					.optional()
+					.default(0)
+					.describe("Skip this many results (for pagination)"),
 				order_by: z
 					.enum(["last_seen", "interaction_count", "first_seen"])
 					.optional()
@@ -198,9 +186,7 @@ export function memoryTools(agent: Wisp) {
 				"Queue a topic to think about later during your next thinking time. Use when something comes up that you want to research or explore but shouldn't do right now.",
 			inputSchema: z.object({
 				topic: z.string().describe("Short label for the note"),
-				content: z
-					.string()
-					.describe("What you want to think about or investigate"),
+				content: z.string().describe("What you want to think about or investigate"),
 			}),
 			execute: async ({ topic, content }) => {
 				const now = Date.now();
@@ -210,12 +196,10 @@ export function memoryTools(agent: Wisp) {
 		}),
 
 		get_notes_to_self: tool({
-			description:
-				"List your pending notes to self — topics you've queued for later thinking.",
+			description: "List your pending notes to self — topics you've queued for later thinking.",
 			inputSchema: z.object({}),
 			execute: async () => {
-				const notes =
-					sql<NoteToSelf>`SELECT * FROM notes_to_self WHERE status = 'pending' ORDER BY created_at ASC`;
+				const notes = sql<NoteToSelf>`SELECT * FROM notes_to_self WHERE status = 'pending' ORDER BY created_at ASC`;
 				return { notes };
 			},
 		}),

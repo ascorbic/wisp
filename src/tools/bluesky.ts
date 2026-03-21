@@ -41,11 +41,7 @@ async function buildRichText(
 
 	// Check if there are any facet-worthy tokens
 	const hasFacets = tokens.some(
-		(t) =>
-			t.type === "mention" ||
-			t.type === "autolink" ||
-			t.type === "link" ||
-			t.type === "topic",
+		(t) => t.type === "mention" || t.type === "autolink" || t.type === "link" || t.type === "topic",
 	);
 	if (!hasFacets) return { text };
 
@@ -71,10 +67,7 @@ async function buildRichText(
 				builder.addLink(token.raw, token.url as `https://${string}`);
 				break;
 			case "link":
-				builder.addLink(
-					extractText(token.children),
-					token.url as `https://${string}`,
-				);
+				builder.addLink(extractText(token.children), token.url as `https://${string}`);
 				break;
 			case "topic":
 				builder.addTag(token.name);
@@ -131,9 +124,7 @@ async function getRecordFromPds(
 		collection,
 		rkey,
 	});
-	const res = await fetch(
-		`${pds}/xrpc/com.atproto.repo.getRecord?${params}`,
-	);
+	const res = await fetch(`${pds}/xrpc/com.atproto.repo.getRecord?${params}`);
 	if (!res.ok) {
 		const err = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
 		throw new Error(err.message ?? `getRecord failed: ${res.status}`);
@@ -256,8 +247,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 		}),
 
 		like: tool({
-			description:
-				"Like a post. A lightweight way to acknowledge something without replying.",
+			description: "Like a post. A lightweight way to acknowledge something without replying.",
 			inputSchema: z.object({
 				subject: strongRefSchema.describe("The post to like"),
 			}),
@@ -373,11 +363,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				"Fetch a full thread for context. Use before replying to understand the conversation.",
 			inputSchema: z.object({
 				uri: z.string().describe("AT URI of any post in the thread"),
-				depth: z
-					.number()
-					.optional()
-					.default(6)
-					.describe("How many levels of replies to fetch"),
+				depth: z.number().optional().default(6).describe("How many levels of replies to fetch"),
 			}),
 			execute: async ({ uri, depth }) => {
 				const result = await ok(
@@ -400,8 +386,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 					rpc.get("app.bsky.actor.getProfile", {
 						params: { actor: actor as Did },
 						headers: {
-							"atproto-accept-labelers":
-								"did:plc:saslbwamakedc4h6c5bmshvz",
+							"atproto-accept-labelers": "did:plc:saslbwamakedc4h6c5bmshvz",
 						},
 					}),
 				);
@@ -426,11 +411,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				"Update your Bluesky profile. Any fields not provided will keep their current values.",
 			inputSchema: z.object({
 				displayName: z.string().max(64).optional().describe("Display name"),
-				description: z
-					.string()
-					.max(256)
-					.optional()
-					.describe("Profile bio/description"),
+				description: z.string().max(256).optional().describe("Profile bio/description"),
 			}),
 			execute: async ({ displayName, description }) => {
 				const existing = await ok(
@@ -463,14 +444,8 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				"Search Bluesky posts. Supports Lucene-style queries. Can filter by author, language, domain, tag, date range, and sort by 'latest' or 'top'.",
 			inputSchema: z.object({
 				q: z.string().describe("Search query"),
-				author: z
-					.string()
-					.optional()
-					.describe("Filter to posts by this handle or DID"),
-				sort: z
-					.enum(["latest", "top"])
-					.optional()
-					.describe("Sort order (default: latest)"),
+				author: z.string().optional().describe("Filter to posts by this handle or DID"),
+				sort: z.enum(["latest", "top"]).optional().describe("Sort order (default: latest)"),
 				since: z
 					.string()
 					.optional()
@@ -483,12 +458,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 					.array(z.string())
 					.optional()
 					.describe("Filter by hashtags (without #), AND matching"),
-				limit: z
-					.number()
-					.min(1)
-					.max(25)
-					.optional()
-					.describe("Max results (default 10)"),
+				limit: z.number().min(1).max(25).optional().describe("Max results (default 10)"),
 			}),
 			execute: async ({ q, author, sort, since, until, tag, limit }) => {
 				const result = await ok(
@@ -528,12 +498,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 			description: "Search for Bluesky users by name or handle.",
 			inputSchema: z.object({
 				q: z.string().describe("Search query"),
-				limit: z
-					.number()
-					.min(1)
-					.max(25)
-					.optional()
-					.describe("Max results (default 10)"),
+				limit: z.number().min(1).max(25).optional().describe("Max results (default 10)"),
 			}),
 			execute: async ({ q, limit }) => {
 				const result = await ok(
@@ -557,9 +522,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				repo: z.string().describe("Handle or DID of the repo"),
 				collection: z
 					.string()
-					.describe(
-						"NSID of the collection (e.g. site.standard.document, app.bsky.feed.post)",
-					),
+					.describe("NSID of the collection (e.g. site.standard.document, app.bsky.feed.post)"),
 				rkey: z.string().describe("Record key"),
 			}),
 			execute: async ({ repo: target, collection, rkey }) => {
@@ -580,23 +543,12 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 		}),
 
 		list_records: tool({
-			description:
-				"List records in any ATProto collection. Works with any lexicon.",
+			description: "List records in any ATProto collection. Works with any lexicon.",
 			inputSchema: z.object({
 				repo: z.string().describe("Handle or DID of the repo"),
-				collection: z
-					.string()
-					.describe("NSID of the collection (e.g. site.standard.document)"),
-				limit: z
-					.number()
-					.min(1)
-					.max(100)
-					.optional()
-					.describe("Max records to return (default 20)"),
-				reverse: z
-					.boolean()
-					.optional()
-					.describe("Reverse the order of returned records"),
+				collection: z.string().describe("NSID of the collection (e.g. site.standard.document)"),
+				limit: z.number().min(1).max(100).optional().describe("Max records to return (default 20)"),
+				reverse: z.boolean().optional().describe("Reverse the order of returned records"),
 			}),
 			execute: async ({ repo: target, collection, limit, reverse }) => {
 				if (collection.startsWith("app.bsky.") || collection.startsWith("chat.bsky.")) {
@@ -624,9 +576,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 					limit: String(limit ?? 20),
 				});
 				if (reverse) params.set("reverse", "true");
-				const res = await fetch(
-					`${pds}/xrpc/com.atproto.repo.listRecords?${params}`,
-				);
+				const res = await fetch(`${pds}/xrpc/com.atproto.repo.listRecords?${params}`);
 				if (!res.ok) {
 					const err = (await res.json().catch(() => ({}))) as { message?: string };
 					throw new Error(err.message ?? `listRecords failed: ${res.status}`);
@@ -646,13 +596,9 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 			description:
 				"Create or update any ATProto record in your own repo. The record must include a $type field matching the collection. Use get_record or list_records first to understand the schema. Records are validated by the PDS against known lexicons.",
 			inputSchema: z.object({
-				collection: z
-					.string()
-					.describe("NSID of the collection (e.g. pub.leaflet.entry)"),
+				collection: z.string().describe("NSID of the collection (e.g. pub.leaflet.entry)"),
 				rkey: z.string().describe("Record key"),
-				record: z
-					.record(z.unknown())
-					.describe("The record object (must include $type)"),
+				record: z.record(z.unknown()).describe("The record object (must include $type)"),
 			}),
 			execute: async ({ collection, rkey, record }) => {
 				const result = await ok(
@@ -711,11 +657,13 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				const page = await fetch(input);
 				if (page.ok) {
 					const html = await page.text();
-					const linkMatch = html.match(
-						/<link[^>]+rel=["']site\.standard\.document["'][^>]+href=["'](at:\/\/[^"']+)["']/,
-					) ?? html.match(
-						/<link[^>]+href=["'](at:\/\/[^"']+)["'][^>]+rel=["']site\.standard\.document["']/,
-					);
+					const linkMatch =
+						html.match(
+							/<link[^>]+rel=["']site\.standard\.document["'][^>]+href=["'](at:\/\/[^"']+)["']/,
+						) ??
+						html.match(
+							/<link[^>]+href=["'](at:\/\/[^"']+)["'][^>]+rel=["']site\.standard\.document["']/,
+						);
 					if (linkMatch) {
 						const [, targetDid, collection, rkey] =
 							linkMatch[1].match(/^at:\/\/(did:[^/]+)\/([^/]+)\/([^/]+)$/) ?? [];
@@ -729,9 +677,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				const rkey = parsed.pathname.slice(1).split("/")[0];
 				if (!rkey) return { error: "Could not extract rkey from URL path" };
 
-				const wellKnown = await fetch(
-					`${parsed.origin}/.well-known/site.standard.publication`,
-				);
+				const wellKnown = await fetch(`${parsed.origin}/.well-known/site.standard.publication`);
 				if (!wellKnown.ok) {
 					return {
 						error: `No standard.site publication found at ${parsed.origin}`,
@@ -739,8 +685,7 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				}
 				const atUri = (await wellKnown.text()).trim();
 				const didMatch = atUri.match(/^at:\/\/(did:[^/]+)\//);
-				if (!didMatch)
-					return { error: `Invalid AT URI from .well-known: ${atUri}` };
+				if (!didMatch) return { error: `Invalid AT URI from .well-known: ${atUri}` };
 				const targetDid = didMatch[1];
 
 				return getRecordFromPds(targetDid, "site.standard.document", rkey);
@@ -751,16 +696,8 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 			description:
 				"Get your Following feed — recent posts from people you follow. Use to stay aware of what's happening in your network.",
 			inputSchema: z.object({
-				limit: z
-					.number()
-					.min(1)
-					.max(100)
-					.optional()
-					.describe("Max posts to return (default 30)"),
-				cursor: z
-					.string()
-					.optional()
-					.describe("Pagination cursor from a previous response"),
+				limit: z.number().min(1).max(100).optional().describe("Max posts to return (default 30)"),
+				cursor: z.string().optional().describe("Pagination cursor from a previous response"),
 			}),
 			execute: async ({ limit, cursor }) => {
 				const result = await ok(
@@ -780,16 +717,8 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				"Get posts from a custom feed generator by its AT URI (e.g. at://did:.../app.bsky.feed.generator/feed-name).",
 			inputSchema: z.object({
 				feed: z.string().describe("AT URI of the feed generator"),
-				limit: z
-					.number()
-					.min(1)
-					.max(100)
-					.optional()
-					.describe("Max posts to return (default 30)"),
-				cursor: z
-					.string()
-					.optional()
-					.describe("Pagination cursor from a previous response"),
+				limit: z.number().min(1).max(100).optional().describe("Max posts to return (default 30)"),
+				cursor: z.string().optional().describe("Pagination cursor from a previous response"),
 			}),
 			execute: async ({ feed, limit, cursor }) => {
 				const result = await ok(

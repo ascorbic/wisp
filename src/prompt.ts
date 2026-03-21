@@ -36,10 +36,7 @@ export function buildSystemPrompt(identity: string, norms: string): string {
 	return parts.join("\n\n");
 }
 
-export function formatEvent(
-	event: JetstreamEvent,
-	context?: { handle?: string },
-): string {
+export function formatEvent(event: JetstreamEvent, context?: { handle?: string }): string {
 	if (event.kind !== "commit" || !event.commit) {
 		return `<event type="unknown">\n${event.kind} from ${event.did}\n</event>`;
 	}
@@ -139,27 +136,32 @@ export function buildSpontaneousPostPrompt(
 	const parts: string[] = [];
 
 	const now = Date.now();
-	if (lastPostAt) {
-		const ago = formatRelativeTime(lastPostAt, now);
-		parts.push(`<last-post time="${ago}" />`);
-	} else {
-		parts.push(`<last-post time="more than 1 week ago"/>`);
-	}
 
 	if (recentJournal.length > 0) {
 		const entries = recentJournal
-			.map((j) => `<entry topic="${j.topic}" time="${formatRelativeTime(j.created_at, now)}">${j.content}</entry>`)
+			.map(
+				(j) =>
+					`<entry topic="${j.topic}" time="${formatRelativeTime(j.created_at, now)}">${j.content}</entry>`,
+			)
 			.join("\n");
 		parts.push(`<recent-journal>\n${entries}\n</recent-journal>`);
 	}
 
 	if (recentInteractions.length > 0) {
 		const summaries = recentInteractions
-			.map((i) => `<interaction type="${i.type}" time="${formatRelativeTime(i.created_at, now)}">${i.summary}</interaction>`)
+			.map(
+				(i) =>
+					`<interaction type="${i.type}" time="${formatRelativeTime(i.created_at, now)}">${i.summary}</interaction>`,
+			)
 			.join("\n");
-		parts.push(
-			`<recent-interactions>\n${summaries}\n</recent-interactions>`,
-		);
+		parts.push(`<recent-interactions>\n${summaries}\n</recent-interactions>`);
+	}
+
+	if (lastPostAt) {
+		const ago = formatRelativeTime(lastPostAt, now);
+		parts.push(`<last-spontaneous-post time="${ago}" />`);
+	} else {
+		parts.push(`<last-spontaneous-post time="more than 1 week ago"/>`);
 	}
 
 	return `<spontaneous-post>
@@ -189,7 +191,10 @@ export function buildReflectionPrompt(
 	}
 
 	const summaries = recentInteractions
-		.map((i) => `<interaction type="${i.type}" time="${formatRelativeTime(i.created_at, Date.now())}">${i.summary}</interaction>`)
+		.map(
+			(i) =>
+				`<interaction type="${i.type}" time="${formatRelativeTime(i.created_at, Date.now())}">${i.summary}</interaction>`,
+		)
 		.join("\n");
 
 	return `<reflection>
@@ -226,21 +231,25 @@ export function buildTimelineCheckPrompt(posts: TimelinePost[]): string {
 </timeline-check>`;
 	}
 
-	const formatted = posts.map((p) => {
-		const author = p.author.displayName
-			? `${p.author.handle} (${p.author.displayName})`
-			: p.author.handle;
-		const stats = [
-			p.likeCount ? `${p.likeCount} likes` : "",
-			p.replyCount ? `${p.replyCount} replies` : "",
-			p.repostCount ? `${p.repostCount} reposts` : "",
-		].filter(Boolean).join(", ");
-		const repost = p.repostedBy ? ` (reposted by ${p.repostedBy})` : "";
-		return `<post uri="${p.uri}" cid="${p.cid}" author-did="${p.author.did}"${repost}>
+	const formatted = posts
+		.map((p) => {
+			const author = p.author.displayName
+				? `${p.author.handle} (${p.author.displayName})`
+				: p.author.handle;
+			const stats = [
+				p.likeCount ? `${p.likeCount} likes` : "",
+				p.replyCount ? `${p.replyCount} replies` : "",
+				p.repostCount ? `${p.repostCount} reposts` : "",
+			]
+				.filter(Boolean)
+				.join(", ");
+			const repost = p.repostedBy ? ` (reposted by ${p.repostedBy})` : "";
+			return `<post uri="${p.uri}" cid="${p.cid}" author-did="${p.author.did}"${repost}>
 @${author}${stats ? ` [${stats}]` : ""}
 ${p.text ?? ""}
 </post>`;
-	}).join("\n");
+		})
+		.join("\n");
 
 	return `<timeline-check>
 <prompt>
@@ -275,8 +284,7 @@ export function formatContext(ctx: EventContext): string {
 
 	if (
 		ctx.memorySearch &&
-		(ctx.memorySearch.users.length > 0 ||
-			ctx.memorySearch.journal.length > 0)
+		(ctx.memorySearch.users.length > 0 || ctx.memorySearch.journal.length > 0)
 	) {
 		parts.push(formatMemorySearch(ctx.memorySearch));
 	}
@@ -328,11 +336,7 @@ function formatThread(thread: unknown): string {
 	return lines.join("\n");
 }
 
-function formatThreadNode(
-	node: ThreadNode,
-	depth: number,
-	lines: string[],
-): void {
+function formatThreadNode(node: ThreadNode, depth: number, lines: string[]): void {
 	const indent = "  ".repeat(depth);
 	if (!node?.post) {
 		if (node?.$type?.includes("notFound")) {
@@ -366,9 +370,7 @@ function formatProfile(p: EventContext["authorProfile"]): string {
 		p.followersCount != null ? `followers="${p.followersCount}"` : "",
 		p.followsCount != null ? `follows="${p.followsCount}"` : "",
 		p.postsCount != null ? `posts="${p.postsCount}"` : "",
-		p.labels?.length
-			? `labels="${p.labels.map((l) => l.val).join(",")}"`
-			: "",
+		p.labels?.length ? `labels="${p.labels.map((l) => l.val).join(",")}"` : "",
 	]
 		.filter(Boolean)
 		.join(" ");
@@ -384,10 +386,7 @@ function formatProfile(p: EventContext["authorProfile"]): string {
 function formatUserMemory(mem: EventContext["userMemory"]): string {
 	if (!mem?.found || !mem.user) return "";
 	const u = mem.user;
-	const attrs = [
-		u.tier ? `tier="${u.tier}"` : "",
-		`interactions="${u.interaction_count}"`,
-	]
+	const attrs = [u.tier ? `tier="${u.tier}"` : "", `interactions="${u.interaction_count}"`]
 		.filter(Boolean)
 		.join(" ");
 
@@ -412,9 +411,7 @@ function formatUserMemory(mem: EventContext["userMemory"]): string {
 function formatMemorySearch(search: NonNullable<EventContext["memorySearch"]>): string {
 	const parts: string[] = [];
 	for (const u of search.users) {
-		parts.push(
-			`<user handle="${u.handle ?? ""}" did="${u.did}">${u.profile ?? ""}</user>`,
-		);
+		parts.push(`<user handle="${u.handle ?? ""}" did="${u.did}">${u.profile ?? ""}</user>`);
 	}
 	for (const j of search.journal) {
 		parts.push(`<journal topic="${j.topic}">${j.content}</journal>`);

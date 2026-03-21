@@ -9,17 +9,17 @@
 		"bindings": [
 			{
 				"name": "WISP",
-				"class_name": "Wisp"
-			}
-		]
+				"class_name": "Wisp",
+			},
+		],
 	},
 	"migrations": [
 		{
 			"tag": "v1",
-			"new_sqlite_classes": ["Wisp"]
-		}
+			"new_sqlite_classes": ["Wisp"],
+		},
 	],
-"observability": {
-		"enabled": true
-	}
+	"observability": {
+		"enabled": true,
+	},
 }

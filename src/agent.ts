@@ -103,8 +103,7 @@ export class Wisp extends DurableObject<Env> {
 			await this.ctx.storage.put("norms", "");
 		}
 
-		this.cursor =
-			(await this.ctx.storage.get<number>("jetstream_cursor")) ?? undefined;
+		this.cursor = (await this.ctx.storage.get<number>("jetstream_cursor")) ?? undefined;
 
 		await credentialManager.login({
 			identifier: env.BSKY_HANDLE,
@@ -210,23 +209,20 @@ export class Wisp extends DurableObject<Env> {
 		await this.pollAdminDms();
 
 		// Check if reflection is due
-		const lastReflection =
-			(await this.ctx.storage.get<number>("last_reflection")) ?? 0;
+		const lastReflection = (await this.ctx.storage.get<number>("last_reflection")) ?? 0;
 		if (Date.now() - lastReflection > REFLECTION_INTERVAL) {
 			await this.ctx.storage.put("last_reflection", Date.now());
 			await this.runReflection();
 		}
 
 		// Check if thinking time is due
-		const lastThinking =
-			(await this.ctx.storage.get<number>("last_thinking")) ?? 0;
+		const lastThinking = (await this.ctx.storage.get<number>("last_thinking")) ?? 0;
 		if (Date.now() - lastThinking > THINKING_INTERVAL) {
 			await this.runThinkingTime();
 		}
 
 		// Check if timeline check is due
-		const lastTimelineCheck =
-			(await this.ctx.storage.get<number>("last_timeline_check")) ?? 0;
+		const lastTimelineCheck = (await this.ctx.storage.get<number>("last_timeline_check")) ?? 0;
 		if (Date.now() - lastTimelineCheck > TIMELINE_CHECK_INTERVAL) {
 			await this.ctx.storage.put("last_timeline_check", Date.now());
 			await this.runTimelineCheck();
@@ -257,11 +253,7 @@ export class Wisp extends DurableObject<Env> {
 		this.eventsReceived = 0;
 		this.eventsHandled = 0;
 		this.ws = connectJetstream({
-			collections: [
-				"app.bsky.feed.post",
-				"app.bsky.feed.like",
-				"app.bsky.graph.follow",
-			],
+			collections: ["app.bsky.feed.post", "app.bsky.feed.like", "app.bsky.graph.follow"],
 			cursor: this.cursor,
 			onEvent: async (event) => {
 				this.cursor = event.time_us;
@@ -319,8 +311,7 @@ export class Wisp extends DurableObject<Env> {
 				| { parent?: { uri: string }; root?: { uri: string } }
 				| undefined;
 			if (reply) {
-				if (reply.parent?.uri?.startsWith(`at://${this.agentDid}/`))
-					return true;
+				if (reply.parent?.uri?.startsWith(`at://${this.agentDid}/`)) return true;
 				if (reply.root?.uri?.startsWith(`at://${this.agentDid}/`)) return true;
 
 				const rootUri = reply.root?.uri;
@@ -348,28 +339,23 @@ export class Wisp extends DurableObject<Env> {
 
 			const handle = ctx.authorProfile?.handle;
 			if (handle) {
-				this
-					.sql`INSERT INTO users (did, handle, first_seen, last_seen, interaction_count)
+				this.sql`INSERT INTO users (did, handle, first_seen, last_seen, interaction_count)
 					VALUES (${event.did}, ${handle}, ${Date.now()}, ${Date.now()}, 0)
 					ON CONFLICT(did) DO UPDATE SET handle = ${handle}, last_seen = ${Date.now()}`;
 			}
 
 			const eventPrompt = formatEvent(event, { handle });
 			const contextPrompt = formatContext(ctx);
-			const prompt = contextPrompt
-				? `${eventPrompt}\n\n${contextPrompt}`
-				: eventPrompt;
+			const prompt = contextPrompt ? `${eventPrompt}\n\n${contextPrompt}` : eventPrompt;
 			if (contextPrompt) {
 				console.log("Event context:", contextPrompt);
 			}
 			await this.runEventLoop(prompt);
 
-			if (
-				event.kind === "commit" &&
-				event.commit?.collection === "app.bsky.feed.post"
-			) {
-				const reply = (event.commit.record as Record<string, unknown>)
-					?.reply as { root?: { uri: string } } | undefined;
+			if (event.kind === "commit" && event.commit?.collection === "app.bsky.feed.post") {
+				const reply = (event.commit.record as Record<string, unknown>)?.reply as
+					| { root?: { uri: string } }
+					| undefined;
 				const rootUri = reply?.root?.uri;
 				if (rootUri) {
 					this.sql`INSERT INTO tracked_threads (rootUri, lastActivity)
@@ -385,8 +371,7 @@ export class Wisp extends DurableObject<Env> {
 	// --- Tool loop ---
 
 	private async runToolLoop(prompt: string) {
-		const identity =
-			(await this.ctx.storage.get<string>("identity")) ?? SEED_IDENTITY;
+		const identity = (await this.ctx.storage.get<string>("identity")) ?? SEED_IDENTITY;
 		const norms = (await this.ctx.storage.get<string>("norms")) ?? "";
 		const system = buildSystemPrompt(identity, norms);
 
@@ -401,9 +386,7 @@ export class Wisp extends DurableObject<Env> {
 		};
 
 		const recentActivity = formatRecentActivity(this.sql.bind(this));
-		const fullPrompt = recentActivity
-			? `${recentActivity}\n\n${prompt}`
-			: prompt;
+		const fullPrompt = recentActivity ? `${recentActivity}\n\n${prompt}` : prompt;
 
 		try {
 			console.log("Tool loop start:", prompt.slice(0, 200));
@@ -438,9 +421,7 @@ export class Wisp extends DurableObject<Env> {
 				}
 				for (const toolResult of step.toolResults) {
 					const output = JSON.stringify("result" in toolResult ? toolResult.result : {});
-					console.log(
-						`Tool result: ${toolResult.toolName} → ${output.slice(0, 500)}`,
-					);
+					console.log(`Tool result: ${toolResult.toolName} → ${output.slice(0, 500)}`);
 				}
 				if (step.text) {
 					console.log("Step text:", step.text.slice(0, 500));
@@ -461,8 +442,7 @@ export class Wisp extends DurableObject<Env> {
 	// --- Event loop (pre-fetched context, curated tools) ---
 
 	private async runEventLoop(prompt: string) {
-		const identity =
-			(await this.ctx.storage.get<string>("identity")) ?? SEED_IDENTITY;
+		const identity = (await this.ctx.storage.get<string>("identity")) ?? SEED_IDENTITY;
 		const norms = (await this.ctx.storage.get<string>("norms")) ?? "";
 		const system = buildSystemPrompt(identity, norms);
 
@@ -494,9 +474,7 @@ export class Wisp extends DurableObject<Env> {
 		};
 
 		const recentActivity = formatRecentActivity(this.sql.bind(this));
-		const fullPrompt = recentActivity
-			? `${recentActivity}\n\n${prompt}`
-			: prompt;
+		const fullPrompt = recentActivity ? `${recentActivity}\n\n${prompt}` : prompt;
 
 		try {
 			console.log("Event loop start:", prompt.slice(0, 200));
@@ -516,12 +494,8 @@ export class Wisp extends DurableObject<Env> {
 					);
 				}
 				for (const toolResult of step.toolResults) {
-					const output = JSON.stringify(
-						"result" in toolResult ? toolResult.result : {},
-					);
-					console.log(
-						`Tool result: ${toolResult.toolName} → ${output.slice(0, 500)}`,
-					);
+					const output = JSON.stringify("result" in toolResult ? toolResult.result : {});
+					console.log(`Tool result: ${toolResult.toolName} → ${output.slice(0, 500)}`);
 				}
 				if (step.text) {
 					console.log("Step text:", step.text.slice(0, 500));
@@ -549,8 +523,7 @@ export class Wisp extends DurableObject<Env> {
 				}),
 			);
 
-			const lastChecked =
-				(await this.ctx.storage.get<string>("last_dm_check")) ?? undefined;
+			const lastChecked = (await this.ctx.storage.get<string>("last_dm_check")) ?? undefined;
 
 			const messages = await ok(
 				chatRpc.get("chat.bsky.convo.getMessages", {
@@ -571,8 +544,7 @@ export class Wisp extends DurableObject<Env> {
 			if (hasUnread) {
 				const history = messages.messages
 					.filter(
-						(m): m is typeof m & { text: string } =>
-							m.$type === "chat.bsky.convo.defs#messageView",
+						(m): m is typeof m & { text: string } => m.$type === "chat.bsky.convo.defs#messageView",
 					)
 					.reverse()
 					.map((m) => ({

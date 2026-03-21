@@ -45,9 +45,7 @@ export function connectJetstream(config: JetstreamConfig): WebSocket {
 
 	ws.addEventListener("message", async (event) => {
 		try {
-			const msg: JetstreamEvent = JSON.parse(
-				typeof event.data === "string" ? event.data : "",
-			);
+			const msg: JetstreamEvent = JSON.parse(typeof event.data === "string" ? event.data : "");
 			await config.onEvent(msg);
 		} catch (err) {
 			console.error("Jetstream message parse error:", err);

@@ -48,17 +48,13 @@ export interface EventContext {
 	};
 }
 
-async function fetchProfile(
-	rpc: Client,
-	did: string,
-): Promise<AuthorProfile | undefined> {
+async function fetchProfile(rpc: Client, did: string): Promise<AuthorProfile | undefined> {
 	try {
 		const result = await ok(
 			rpc.get("app.bsky.actor.getProfile", {
 				params: { actor: did as Did },
 				headers: {
-					"atproto-accept-labelers":
-						"did:plc:saslbwamakedc4h6c5bmshvz",
+					"atproto-accept-labelers": "did:plc:saslbwamakedc4h6c5bmshvz",
 				},
 			}),
 		);
@@ -77,10 +73,7 @@ async function fetchProfile(
 	}
 }
 
-function fetchUserMemory(
-	sql: SqlFn,
-	did: string,
-): EventContext["userMemory"] {
+function fetchUserMemory(sql: SqlFn, did: string): EventContext["userMemory"] {
 	const [user] = sql<{
 		did: string;
 		handle: string | null;
@@ -98,10 +91,7 @@ function fetchUserMemory(
 	return { found: true, user, recentInteractions };
 }
 
-async function fetchThread(
-	rpc: Client,
-	uri: string,
-): Promise<unknown> {
+async function fetchThread(rpc: Client, uri: string): Promise<unknown> {
 	try {
 		const result = await ok(
 			rpc.get("app.bsky.feed.getPostThread", {
@@ -114,17 +104,20 @@ async function fetchThread(
 	}
 }
 
-function searchMemory(
-	sql: SqlFn,
-	text: string,
-): EventContext["memorySearch"] {
+function searchMemory(sql: SqlFn, text: string): EventContext["memorySearch"] {
 	const query = text.replace(/[^\w\s]/g, " ").trim();
 	if (!query) return { users: [], journal: [] };
 	try {
-		const users =
-			sql<{ did: string; handle: string | null; profile: string | null }>`SELECT u.did, u.handle, u.profile FROM users_fts f JOIN users u ON f.rowid = u.rowid WHERE users_fts MATCH ${query} LIMIT 5`;
-		const journal =
-			sql<{ topic: string; content: string; created_at: number }>`SELECT j.topic, j.content, j.created_at FROM journal_fts f JOIN journal j ON f.rowid = j.rowid WHERE journal_fts MATCH ${query} ORDER BY j.created_at DESC LIMIT 5`;
+		const users = sql<{
+			did: string;
+			handle: string | null;
+			profile: string | null;
+		}>`SELECT u.did, u.handle, u.profile FROM users_fts f JOIN users u ON f.rowid = u.rowid WHERE users_fts MATCH ${query} LIMIT 5`;
+		const journal = sql<{
+			topic: string;
+			content: string;
+			created_at: number;
+		}>`SELECT j.topic, j.content, j.created_at FROM journal_fts f JOIN journal j ON f.rowid = j.rowid WHERE journal_fts MATCH ${query} ORDER BY j.created_at DESC LIMIT 5`;
 		return { users, journal };
 	} catch {
 		return { users: [], journal: [] };
@@ -141,27 +134,19 @@ export async function fetchEventContext(
 
 	if (collection === "app.bsky.feed.post" && record) {
 		const text = record.text as string;
-		const reply = record.reply as
-			| { parent?: { uri: string } }
-			| undefined;
+		const reply = record.reply as { parent?: { uri: string } } | undefined;
 
-		const [authorProfile, userMemory, thread, memorySearch] =
-			await Promise.all([
-				fetchProfile(deps.rpc, event.did),
-				fetchUserMemory(deps.sql, event.did),
-				reply?.parent?.uri
-					? fetchThread(deps.rpc, reply.parent.uri)
-					: undefined,
-				searchMemory(deps.sql, text),
-			]);
+		const [authorProfile, userMemory, thread, memorySearch] = await Promise.all([
+			fetchProfile(deps.rpc, event.did),
+			fetchUserMemory(deps.sql, event.did),
+			reply?.parent?.uri ? fetchThread(deps.rpc, reply.parent.uri) : undefined,
+			searchMemory(deps.sql, text),
+		]);
 
 		return { authorProfile, userMemory, thread, memorySearch };
 	}
 
-	if (
-		collection === "app.bsky.graph.follow" ||
-		collection === "app.bsky.feed.like"
-	) {
+	if (collection === "app.bsky.graph.follow" || collection === "app.bsky.feed.like") {
 		const [authorProfile, userMemory] = await Promise.all([
 			fetchProfile(deps.rpc, event.did),
 			fetchUserMemory(deps.sql, event.did),
