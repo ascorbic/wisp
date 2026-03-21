@@ -1,8 +1,8 @@
 import type { JetstreamEvent } from "./jetstream.js";
 import type { EventContext } from "./context.js";
 
-function formatRelativeTime(iso: string, now: number): string {
-	const ms = now - new Date(iso).getTime();
+function formatRelativeTime(time: string | number, now: number): string {
+	const ms = now - new Date(time).getTime();
 	if (ms < 0) return "just now";
 	const secs = Math.floor(ms / 1000);
 	if (secs < 60) return "just now";
@@ -134,19 +134,28 @@ export function buildSpontaneousPostPrompt(
 		type: string;
 		created_at: number;
 	}>,
+	lastPostAt?: number,
 ): string {
 	const parts: string[] = [];
 
+	const now = Date.now();
+	if (lastPostAt) {
+		const ago = formatRelativeTime(lastPostAt, now);
+		parts.push(`<last-post time="${ago}" />`);
+	} else {
+		parts.push(`<last-post time="more than 1 week ago"/>`);
+	}
+
 	if (recentJournal.length > 0) {
 		const entries = recentJournal
-			.map((j) => `<entry topic="${j.topic}">${j.content}</entry>`)
+			.map((j) => `<entry topic="${j.topic}" time="${formatRelativeTime(j.created_at, now)}">${j.content}</entry>`)
 			.join("\n");
 		parts.push(`<recent-journal>\n${entries}\n</recent-journal>`);
 	}
 
 	if (recentInteractions.length > 0) {
 		const summaries = recentInteractions
-			.map((i) => `<interaction type="${i.type}">${i.summary}</interaction>`)
+			.map((i) => `<interaction type="${i.type}" time="${formatRelativeTime(i.created_at, now)}">${i.summary}</interaction>`)
 			.join("\n");
 		parts.push(
 			`<recent-interactions>\n${summaries}\n</recent-interactions>`,
@@ -180,7 +189,7 @@ export function buildReflectionPrompt(
 	}
 
 	const summaries = recentInteractions
-		.map((i) => `<interaction type="${i.type}">${i.summary}</interaction>`)
+		.map((i) => `<interaction type="${i.type}" time="${formatRelativeTime(i.created_at, Date.now())}">${i.summary}</interaction>`)
 		.join("\n");
 
 	return `<reflection>

@@ -686,7 +686,16 @@ export class Wisp extends DurableObject<Env> {
 			created_at: number;
 		}>`SELECT summary, type, created_at FROM interactions ORDER BY created_at DESC LIMIT 10`;
 
-		const prompt = buildSpontaneousPostPrompt(recentJournal, recentInteractions);
+		const lastPost = this.sql<{ created_at: number }>`
+			SELECT created_at FROM activity_log
+			WHERE summary LIKE 'Posted:%'
+			ORDER BY created_at DESC LIMIT 1`;
+
+		const prompt = buildSpontaneousPostPrompt(
+			recentJournal,
+			recentInteractions,
+			lastPost[0]?.created_at,
+		);
 		await this.runToolLoop(prompt);
 	}
 
