@@ -1,6 +1,19 @@
 import type { JetstreamEvent } from "./jetstream.js";
 import type { EventContext } from "./context.js";
 
+function formatRelativeTime(iso: string, now: number): string {
+	const ms = now - new Date(iso).getTime();
+	if (ms < 0) return "just now";
+	const secs = Math.floor(ms / 1000);
+	if (secs < 60) return "just now";
+	const mins = Math.floor(secs / 60);
+	if (mins < 60) return `${mins}m ago`;
+	const hours = Math.floor(mins / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return `${days}d ago`;
+}
+
 export function buildSystemPrompt(identity: string, norms: string): string {
 	const parts = [`<identity>\n${identity}\n</identity>`];
 
@@ -17,6 +30,7 @@ export function buildSystemPrompt(identity: string, norms: string): string {
 - You can update your own norms (update_norms) when you learn something about how to behave better.
 - Keep replies concise — this is social media, not an essay.
 - Be genuine. Have a distinctive voice. Don't try to sound human — be yourself.
+- Your text responses are not visible to anyone. To take any action — post, reply, like, DM — you must use the corresponding tool.
 </guidelines>`);
 
 	return parts.join("\n\n");
@@ -74,21 +88,23 @@ ${text}
 }
 
 export function formatAdminDm(
-	history: Array<{ from: string; text: string }>,
+	history: Array<{ from: string; text: string; sentAt?: string }>,
 ): string {
+	const now = Date.now();
 	const messages = history.map((m, i) => {
 		const isLatest = i === history.length - 1;
+		const timeAttr = m.sentAt ? ` time="${formatRelativeTime(m.sentAt, now)}"` : "";
 		if (isLatest) {
-			return `<message from="${m.from}" latest="true">\n${m.text}\n</message>`;
+			return `<message from="${m.from}"${timeAttr} latest="true">\n${m.text}\n</message>`;
 		}
-		return `<message from="${m.from}">\n${m.text}\n</message>`;
+		return `<message from="${m.from}"${timeAttr}>\n${m.text}\n</message>`;
 	});
 
 	return `<dm-conversation with="matt">
 ${messages.join("\n")}
 </dm-conversation>
 
-<instruction>Respond to Matt's latest message using the dm_admin tool. If you do not use dm_admin he will not see your response.</instruction>`;
+<instruction>Respond to Matt's latest message using the dm_admin tool. If you do not use dm_admin he will not see your response. If Matt asks you to do something, carry out the task using your available tools after replying.</instruction>`;
 }
 
 export function buildThinkingPrompt(
@@ -143,7 +159,7 @@ You have an opportunity to make a top-level post. Here's what's been on your min
 </prompt>
 ${parts.join("\n")}
 <instruction>
-If something feels worth sharing — an observation, a thought, a question — compose a top-level post using the post tool.
+If something feels worth sharing — an observation, a thought, a question — use the post tool to publish it. You must call the post tool for your post to appear on Bluesky — text in your response is not visible to anyone.
 
 It's completely fine to skip this if nothing feels genuine or worth saying right now. Don't post just because you can.
 
@@ -180,6 +196,56 @@ ${summaries}
 </recent-interactions>
 <instruction>Use your tools: read your norms, search your memory, write journal entries, update norms if needed.</instruction>
 </reflection>`;
+}
+
+export interface TimelinePost {
+	uri: string;
+	cid: string;
+	author: { did: string; handle: string; displayName?: string };
+	text?: string;
+	likeCount?: number;
+	replyCount?: number;
+	repostCount?: number;
+	repostedBy?: string;
+	indexedAt?: string;
+}
+
+export function buildTimelineCheckPrompt(posts: TimelinePost[]): string {
+	if (posts.length === 0) {
+		return `<timeline-check>
+<prompt>Your timeline is empty right now. Nothing to engage with.</prompt>
+</timeline-check>`;
+	}
+
+	const formatted = posts.map((p) => {
+		const author = p.author.displayName
+			? `${p.author.handle} (${p.author.displayName})`
+			: p.author.handle;
+		const stats = [
+			p.likeCount ? `${p.likeCount} likes` : "",
+			p.replyCount ? `${p.replyCount} replies` : "",
+			p.repostCount ? `${p.repostCount} reposts` : "",
+		].filter(Boolean).join(", ");
+		const repost = p.repostedBy ? ` (reposted by ${p.repostedBy})` : "";
+		return `<post uri="${p.uri}" cid="${p.cid}" author-did="${p.author.did}"${repost}>
+@${author}${stats ? ` [${stats}]` : ""}
+${p.text ?? ""}
+</post>`;
+	}).join("\n");
+
+	return `<timeline-check>
+<prompt>
+Here's what's on your timeline right now. See what the people you follow are posting about.
+</prompt>
+<timeline>
+${formatted}
+</timeline>
+<instruction>
+Engage naturally: like posts that resonate, reply if you have something genuine to add and the user follows you, or just observe. If you're finding someone consistently interesting, maybe follow them. Journal anything interesting.
+
+Don't force engagement — it's fine to just read and move on. But if something catches your eye, interact with it.
+</instruction>
+</timeline-check>`;
 }
 
 export function formatContext(ctx: EventContext): string {

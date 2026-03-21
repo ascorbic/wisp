@@ -41,6 +41,12 @@ export function migrate(sql: TemplateLiteralSQL) {
 		completed_at INTEGER
 	)`;
 
+	sql`CREATE TABLE IF NOT EXISTS activity_log (
+		id INTEGER PRIMARY KEY,
+		summary TEXT,
+		created_at INTEGER
+	)`;
+
 	// FTS5 virtual tables for search
 	sql`CREATE VIRTUAL TABLE IF NOT EXISTS users_fts USING fts5(
 		handle, profile, content=users, content_rowid=rowid

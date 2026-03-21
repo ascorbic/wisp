@@ -20,15 +20,18 @@ import {
 	buildReflectionPrompt,
 	buildThinkingPrompt,
 	buildSpontaneousPostPrompt,
+	buildTimelineCheckPrompt,
 } from "./prompt.js";
 import { fetchEventContext } from "./context.js";
 import { calculateCost } from "./pricing.js";
+import { recordActivity, formatRecentActivity } from "./activity.js";
 import SEED_IDENTITY from "./seed-identity.txt" with { type: "txt" };
 
 const REFLECTION_INTERVAL = 6 * 60 * 60 * 1_000; // 6 hours
 const THINKING_INTERVAL = 2 * 60 * 60 * 1_000; // 2 hours
 const POST_MIN_INTERVAL = 3 * 60 * 60 * 1_000; // 3 hours
 const POST_MAX_INTERVAL = 6 * 60 * 60 * 1_000; // 6 hours
+const TIMELINE_CHECK_INTERVAL = 90 * 60 * 1_000; // 90 minutes
 const CURSOR_PERSIST_INTERVAL = 30_000; // persist cursor every 30s
 const DM_POLL_INTERVAL = 60_000; // check admin DMs every 60s
 
@@ -174,6 +177,11 @@ export class Wisp extends DurableObject<Env> {
 			return new Response("Spontaneous post complete");
 		}
 
+		if (url.pathname === "/timeline" && request.method === "POST") {
+			await this.runTimelineCheck();
+			return new Response("Timeline check complete");
+		}
+
 		if (url.pathname === "/reflect" && request.method === "POST") {
 			await this.runReflection();
 			return new Response("Reflection complete");
@@ -214,6 +222,14 @@ export class Wisp extends DurableObject<Env> {
 			(await this.ctx.storage.get<number>("last_thinking")) ?? 0;
 		if (Date.now() - lastThinking > THINKING_INTERVAL) {
 			await this.runThinkingTime();
+		}
+
+		// Check if timeline check is due
+		const lastTimelineCheck =
+			(await this.ctx.storage.get<number>("last_timeline_check")) ?? 0;
+		if (Date.now() - lastTimelineCheck > TIMELINE_CHECK_INTERVAL) {
+			await this.ctx.storage.put("last_timeline_check", Date.now());
+			await this.runTimelineCheck();
 		}
 
 		// Check if spontaneous post is due
@@ -384,16 +400,35 @@ export class Wisp extends DurableObject<Env> {
 			...identityTools(this),
 		};
 
+		const recentActivity = formatRecentActivity(this.sql.bind(this));
+		const fullPrompt = recentActivity
+			? `${recentActivity}\n\n${prompt}`
+			: prompt;
+
 		try {
 			console.log("Tool loop start:", prompt.slice(0, 200));
 
-			const result = await generateText({
+			let result = await generateText({
 				model: aigateway(unified(env.MODEL)),
 				system,
-				prompt,
+				prompt: fullPrompt,
 				tools,
 				stopWhen: stepCountIs(8),
 			});
+
+			// If the model returned text but made no tool calls, nudge it once
+			const madeToolCalls = result.steps.some((s) => s.toolCalls.length > 0);
+			if (!madeToolCalls && result.text) {
+				console.log("No tool calls made, retrying with nudge");
+				const nudge = `${fullPrompt}\n\n<previous-response>\n${result.text}\n</previous-response>\n\n<reminder>Your previous response was text only. Text responses are not visible to anyone — you must use tools to take actions (post, reply, like, DM, journal, etc.). If you intended to do something, use the appropriate tool now. If you genuinely have nothing to do, that's fine too.</reminder>`;
+				result = await generateText({
+					model: aigateway(unified(env.MODEL)),
+					system,
+					prompt: nudge,
+					tools,
+					stopWhen: stepCountIs(8),
+				});
+			}
 
 			for (const step of result.steps) {
 				for (const call of step.toolCalls) {
@@ -411,6 +446,8 @@ export class Wisp extends DurableObject<Env> {
 					console.log("Step text:", step.text.slice(0, 500));
 				}
 			}
+
+			recordActivity(this.sql.bind(this), result.steps);
 
 			const cost = calculateCost(env.MODEL, result.usage);
 			console.log(
@@ -456,13 +493,18 @@ export class Wisp extends DurableObject<Env> {
 			...eventIdentityTools,
 		};
 
+		const recentActivity = formatRecentActivity(this.sql.bind(this));
+		const fullPrompt = recentActivity
+			? `${recentActivity}\n\n${prompt}`
+			: prompt;
+
 		try {
 			console.log("Event loop start:", prompt.slice(0, 200));
 
 			const result = await generateText({
 				model: aigateway(unified(env.MODEL)),
 				system,
-				prompt,
+				prompt: fullPrompt,
 				tools,
 				stopWhen: stepCountIs(3),
 			});
@@ -485,6 +527,8 @@ export class Wisp extends DurableObject<Env> {
 					console.log("Step text:", step.text.slice(0, 500));
 				}
 			}
+
+			recordActivity(this.sql.bind(this), result.steps);
 
 			const cost = calculateCost(env.MODEL, result.usage);
 			console.log(
@@ -534,6 +578,7 @@ export class Wisp extends DurableObject<Env> {
 					.map((m) => ({
 						from: m.sender.did === this.agentDid ? "wisp" : "matt",
 						text: m.text,
+						sentAt: m.sentAt,
 					}));
 
 				const prompt = formatAdminDm(history);
@@ -575,6 +620,55 @@ export class Wisp extends DurableObject<Env> {
 		await this.ctx.storage.put("last_thinking", Date.now());
 		const prompt = buildThinkingPrompt(notes);
 		await this.runToolLoop(prompt);
+	}
+
+	// --- Timeline check ---
+
+	private async runTimelineCheck() {
+		try {
+			const result = await ok(
+				rpc.get("app.bsky.feed.getTimeline", {
+					params: { limit: 30 },
+				}),
+			);
+			const posts = result.feed.map((item) => {
+				const p = item.post;
+				const record = p.record as { text?: string; createdAt?: string };
+				const post: {
+					uri: string;
+					cid: string;
+					author: { did: string; handle: string; displayName?: string };
+					text?: string;
+					likeCount?: number;
+					replyCount?: number;
+					repostCount?: number;
+					repostedBy?: string;
+					indexedAt?: string;
+				} = {
+					uri: p.uri,
+					cid: p.cid,
+					author: {
+						did: p.author.did,
+						handle: p.author.handle,
+						displayName: p.author.displayName,
+					},
+					text: record.text,
+					likeCount: p.likeCount,
+					replyCount: p.replyCount,
+					repostCount: p.repostCount,
+					indexedAt: record.createdAt,
+				};
+				const reason = item.reason as { $type?: string; by?: { handle: string } } | undefined;
+				if (reason?.$type === "app.bsky.feed.defs#reasonRepost" && reason.by) {
+					post.repostedBy = reason.by.handle;
+				}
+				return post;
+			});
+			const prompt = buildTimelineCheckPrompt(posts);
+			await this.runToolLoop(prompt);
+		} catch (err) {
+			console.error("Timeline check error:", err);
+		}
 	}
 
 	// --- Spontaneous posting ---

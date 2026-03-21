@@ -141,6 +141,44 @@ async function getRecordFromPds(
 	return res.json() as Promise<{ uri: string; cid?: string; value: unknown }>;
 }
 
+/** Format a feed view post into a compact representation */
+function formatFeedItem(item: {
+	post: Record<string, unknown>;
+	reply?: Record<string, unknown>;
+	reason?: Record<string, unknown>;
+}) {
+	const p = item.post as {
+		uri: string;
+		cid: string;
+		author: { did: string; handle: string; displayName?: string };
+		record: { text?: string; createdAt?: string };
+		likeCount?: number;
+		replyCount?: number;
+		repostCount?: number;
+	};
+	const result: Record<string, unknown> = {
+		uri: p.uri,
+		cid: p.cid,
+		author: {
+			did: p.author.did,
+			handle: p.author.handle,
+			displayName: p.author.displayName,
+		},
+		text: p.record.text,
+		likeCount: p.likeCount,
+		replyCount: p.replyCount,
+		repostCount: p.repostCount,
+		indexedAt: p.record.createdAt,
+	};
+	if (item.reason) {
+		const reason = item.reason as { $type?: string; by?: { handle: string } };
+		if (reason.$type === "app.bsky.feed.defs#reasonRepost" && reason.by) {
+			result.repostedBy = reason.by.handle;
+		}
+	}
+	return result;
+}
+
 export interface BlueskyToolsConfig {
 	rpc: Client;
 	chatRpc: Client;
@@ -706,6 +744,63 @@ export function blueskyTools({ rpc, chatRpc, did }: BlueskyToolsConfig) {
 				const targetDid = didMatch[1];
 
 				return getRecordFromPds(targetDid, "site.standard.document", rkey);
+			},
+		}),
+
+		get_timeline: tool({
+			description:
+				"Get your Following feed — recent posts from people you follow. Use to stay aware of what's happening in your network.",
+			inputSchema: z.object({
+				limit: z
+					.number()
+					.min(1)
+					.max(100)
+					.optional()
+					.describe("Max posts to return (default 30)"),
+				cursor: z
+					.string()
+					.optional()
+					.describe("Pagination cursor from a previous response"),
+			}),
+			execute: async ({ limit, cursor }) => {
+				const result = await ok(
+					rpc.get("app.bsky.feed.getTimeline", {
+						params: { limit: limit ?? 30, cursor },
+					}),
+				);
+				return {
+					cursor: result.cursor,
+					feed: result.feed.map(formatFeedItem),
+				};
+			},
+		}),
+
+		get_feed: tool({
+			description:
+				"Get posts from a custom feed generator by its AT URI (e.g. at://did:.../app.bsky.feed.generator/feed-name).",
+			inputSchema: z.object({
+				feed: z.string().describe("AT URI of the feed generator"),
+				limit: z
+					.number()
+					.min(1)
+					.max(100)
+					.optional()
+					.describe("Max posts to return (default 30)"),
+				cursor: z
+					.string()
+					.optional()
+					.describe("Pagination cursor from a previous response"),
+			}),
+			execute: async ({ feed, limit, cursor }) => {
+				const result = await ok(
+					rpc.get("app.bsky.feed.getFeed", {
+						params: { feed: feed as any, limit: limit ?? 30, cursor },
+					}),
+				);
+				return {
+					cursor: result.cursor,
+					feed: result.feed.map(formatFeedItem),
+				};
 			},
 		}),
 
