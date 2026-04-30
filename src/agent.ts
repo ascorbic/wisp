@@ -35,10 +35,10 @@ const TIMELINE_CHECK_INTERVAL = 90 * 60 * 1_000; // 90 minutes
 const CURSOR_PERSIST_INTERVAL = 30_000; // persist cursor every 30s
 const DM_POLL_INTERVAL = 60_000; // check admin DMs every 60s
 
-const RATE_LIMIT_PER_DID_WINDOW = 60 * 60 * 1_000; // 1 hour
-const RATE_LIMIT_PER_DID_MAX = 30;
+const RATE_LIMIT_PER_DID_WINDOW = 10 * 60 * 1_000; // 10 minutes
+const RATE_LIMIT_PER_DID_MAX = 5;
 const RATE_LIMIT_GLOBAL_WINDOW = 10 * 60 * 1_000; // 10 minutes
-const RATE_LIMIT_GLOBAL_MAX = 120;
+const RATE_LIMIT_GLOBAL_MAX = 30;
 const RATE_LIMIT_SWEEP_EVERY = 1_000; // sweep stale DIDs every N checks
 
 interface TrackedThread {
