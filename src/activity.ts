@@ -1,8 +1,7 @@
 const ACTIVITY_WINDOW = 60 * 60 * 1_000; // 1 hour
 
-interface ToolCall {
+interface ToolResult {
 	toolName: string;
-	args?: Record<string, unknown>;
 	input?: unknown;
 }
 
@@ -17,8 +16,12 @@ function summarizeToolCall(name: string, args: Record<string, unknown>): string 
 		// Actions
 		case "like":
 			return `Liked ${(args.subject as { uri?: string })?.uri ?? "a post"}`;
-		case "reply":
-			return `Replied: ${truncate(args.text as string, 80)}`;
+		case "reply": {
+			const parent = args.parent as { uri?: string } | undefined;
+			const uri = parent?.uri ?? "unknown";
+			const short = uri.replace(/^at:\/\//, "");
+			return `Replied to ${short}: ${truncate(args.text as string, 60)}`;
+		}
 		case "post":
 			return `Posted: ${truncate(args.text as string, 80)}`;
 		case "dm_admin":
@@ -90,17 +93,17 @@ function summarizeToolCall(name: string, args: Record<string, unknown>): string 
 	}
 }
 
-/** Record tool calls from a completed generateText result. */
-export function recordActivity(sql: SqlFn, steps: Array<{ toolCalls: ToolCall[] }>): void {
+/** Record successful tool results from a completed generateText result. */
+export function recordActivity(sql: SqlFn, steps: Array<{ toolResults: ToolResult[] }>): void {
 	const now = Date.now();
 
 	// Prune old entries
 	sql`DELETE FROM activity_log WHERE created_at < ${now - ACTIVITY_WINDOW}`;
 
 	for (const step of steps) {
-		for (const call of step.toolCalls) {
-			const args = (call.args ?? call.input ?? {}) as Record<string, unknown>;
-			const summary = summarizeToolCall(call.toolName, args);
+		for (const result of step.toolResults) {
+			const args = (result.input ?? {}) as Record<string, unknown>;
+			const summary = summarizeToolCall(result.toolName, args);
 			if (summary) {
 				sql`INSERT INTO activity_log (summary, created_at) VALUES (${summary}, ${now})`;
 			}
@@ -119,10 +122,34 @@ export function formatRecentActivity(sql: SqlFn): string {
 	if (entries.length === 0) return "";
 
 	const now = Date.now();
-	const lines = entries.map((e) => {
-		const ago = formatAge(now - e.created_at);
-		return `<action time="${ago}">${e.summary}</action>`;
-	});
+
+	// Group entries by timestamp (same recordActivity call = same batch)
+	const groups = new Map<number, string[]>();
+	for (const e of entries) {
+		let list = groups.get(e.created_at);
+		if (!list) {
+			list = [];
+			groups.set(e.created_at, list);
+		}
+		// Skip exact duplicate summaries within a batch
+		if (!list.includes(e.summary)) {
+			list.push(e.summary);
+		}
+	}
+
+	const lines: string[] = [];
+	for (const [ts, summaries] of groups) {
+		const ago = formatAge(now - ts);
+		if (summaries.length === 1) {
+			lines.push(`<action time="${ago}">${summaries[0]}</action>`);
+		} else {
+			lines.push(`<actions time="${ago}">`);
+			for (const s of summaries) {
+				lines.push(`- ${s}`);
+			}
+			lines.push("</actions>");
+		}
+	}
 
 	return `<recent-activity>\n${lines.join("\n")}\n</recent-activity>`;
 }
