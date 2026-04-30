@@ -47,6 +47,16 @@ export function migrate(sql: TemplateLiteralSQL) {
 		created_at INTEGER
 	)`;
 
+	sql`CREATE TABLE IF NOT EXISTS blocks (
+		blocker_did TEXT NOT NULL,
+		subject_did TEXT NOT NULL,
+		rkey TEXT NOT NULL,
+		created_at INTEGER,
+		PRIMARY KEY (blocker_did, rkey)
+	)`;
+
+	sql`CREATE INDEX IF NOT EXISTS blocks_subject ON blocks(subject_did)`;
+
 	// FTS5 virtual tables for search
 	sql`CREATE VIRTUAL TABLE IF NOT EXISTS users_fts USING fts5(
 		handle, profile, content=users, content_rowid=rowid

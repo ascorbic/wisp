@@ -4,7 +4,7 @@ import { generateText, stepCountIs } from "ai";
 import { createAiGateway } from "ai-gateway-provider";
 import { createUnified } from "ai-gateway-provider/providers/unified";
 import { Client, CredentialManager, ok } from "@atcute/client";
-import type { Did } from "@atcute/lexicons";
+import type { Did, Nsid } from "@atcute/lexicons";
 import type {} from "@atcute/bluesky";
 import type {} from "@atcute/atproto";
 import { migrate } from "./schema.js";
@@ -127,6 +127,7 @@ export class Wisp extends DurableObject<Env> {
 		const url = new URL(request.url);
 
 		if (url.pathname === "/start") {
+			await this.backfillBlocks();
 			this.connectJetstream();
 			this.scheduleNextAlarm();
 			return new Response("Started");
@@ -253,13 +254,20 @@ export class Wisp extends DurableObject<Env> {
 		this.eventsReceived = 0;
 		this.eventsHandled = 0;
 		this.ws = connectJetstream({
-			collections: ["app.bsky.feed.post", "app.bsky.feed.like", "app.bsky.graph.follow"],
+			collections: [
+				"app.bsky.feed.post",
+				"app.bsky.feed.like",
+				"app.bsky.graph.follow",
+				"app.bsky.graph.block",
+			],
 			cursor: this.cursor,
 			onEvent: async (event) => {
 				this.cursor = event.time_us;
 				this.eventsReceived++;
 				this.tickEps();
 				this.maybePersistCursor();
+
+				this.recordBlockEvent(event);
 
 				if (this.isRelevantEvent(event)) {
 					this.eventsHandled++;
@@ -273,9 +281,98 @@ export class Wisp extends DurableObject<Env> {
 		});
 	}
 
+	private async backfillBlocks() {
+		const done = await this.ctx.storage.get<number>("blocks_backfilled_at");
+		if (done) return;
+
+		console.log("Backfilling blocks…");
+		let outgoing = 0;
+		let incoming = 0;
+
+		let cursor: string | undefined;
+		do {
+			const res = await ok(
+				rpc.get("com.atproto.repo.listRecords", {
+					params: {
+						repo: this.agentDid as Did,
+						collection: "app.bsky.graph.block" as Nsid,
+						limit: 100,
+						cursor,
+					},
+				}),
+			);
+			for (const rec of res.records) {
+				const subject = (rec.value as { subject?: string } | undefined)?.subject;
+				const rkey = rec.uri.split("/").pop();
+				if (!subject || !rkey) continue;
+				this.sql`INSERT OR REPLACE INTO blocks (blocker_did, subject_did, rkey, created_at)
+					VALUES (${this.agentDid}, ${subject}, ${rkey}, ${Date.now()})`;
+				outgoing++;
+			}
+			cursor = res.cursor;
+		} while (cursor);
+
+		let conCursor: string | undefined;
+		do {
+			const url = new URL(
+				"https://constellation.microcosm.blue/xrpc/blue.microcosm.links.getBacklinks",
+			);
+			url.searchParams.set("subject", this.agentDid);
+			url.searchParams.set("source", "app.bsky.graph.block:subject");
+			url.searchParams.set("limit", "100");
+			if (conCursor) url.searchParams.set("cursor", conCursor);
+			const res = await fetch(url);
+			if (!res.ok) {
+				console.error(`Constellation error ${res.status}`);
+				break;
+			}
+			const data = (await res.json()) as {
+				records?: Array<{ did: string; collection: string; rkey: string }>;
+				cursor?: string;
+			};
+			for (const r of data.records ?? []) {
+				this.sql`INSERT OR REPLACE INTO blocks (blocker_did, subject_did, rkey, created_at)
+					VALUES (${r.did}, ${this.agentDid}, ${r.rkey}, ${Date.now()})`;
+				incoming++;
+			}
+			conCursor = data.cursor;
+		} while (conCursor);
+
+		await this.ctx.storage.put("blocks_backfilled_at", Date.now());
+		console.log(`Backfilled ${outgoing} outgoing, ${incoming} incoming blocks`);
+	}
+
+	private recordBlockEvent(event: JetstreamEvent) {
+		if (event.kind !== "commit" || !event.commit) return;
+		if (event.commit.collection !== "app.bsky.graph.block") return;
+
+		const { operation, rkey, record } = event.commit;
+		const blocker = event.did;
+
+		if (operation === "create") {
+			const subject = (record as { subject?: string } | undefined)?.subject;
+			if (!subject) return;
+			if (blocker !== this.agentDid && subject !== this.agentDid) return;
+			this.sql`INSERT OR REPLACE INTO blocks (blocker_did, subject_did, rkey, created_at)
+				VALUES (${blocker}, ${subject}, ${rkey}, ${Date.now()})`;
+		} else if (operation === "delete") {
+			this.sql`DELETE FROM blocks WHERE blocker_did = ${blocker} AND rkey = ${rkey}`;
+		}
+	}
+
+	private isBlocked(did: string): boolean {
+		if (did === this.agentDid) return false;
+		const rows = this.sql<{ n: number }>`SELECT 1 AS n FROM blocks
+			WHERE (blocker_did = ${this.agentDid} AND subject_did = ${did})
+			   OR (blocker_did = ${did} AND subject_did = ${this.agentDid})
+			LIMIT 1`;
+		return rows.length > 0;
+	}
+
 	private isRelevantEvent(event: JetstreamEvent): boolean {
 		if (event.kind !== "commit" || !event.commit) return false;
 		if (event.commit.operation !== "create") return false;
+		if (this.isBlocked(event.did)) return false;
 
 		const { collection, record } = event.commit;
 
