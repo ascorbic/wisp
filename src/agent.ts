@@ -35,6 +35,12 @@ const TIMELINE_CHECK_INTERVAL = 90 * 60 * 1_000; // 90 minutes
 const CURSOR_PERSIST_INTERVAL = 30_000; // persist cursor every 30s
 const DM_POLL_INTERVAL = 60_000; // check admin DMs every 60s
 
+const RATE_LIMIT_PER_DID_WINDOW = 60 * 60 * 1_000; // 1 hour
+const RATE_LIMIT_PER_DID_MAX = 30;
+const RATE_LIMIT_GLOBAL_WINDOW = 10 * 60 * 1_000; // 10 minutes
+const RATE_LIMIT_GLOBAL_MAX = 120;
+const RATE_LIMIT_SWEEP_EVERY = 1_000; // sweep stale DIDs every N checks
+
 interface TrackedThread {
 	rootUri: string;
 	lastActivity: number;
@@ -74,6 +80,11 @@ export class Wisp extends DurableObject<Env> {
 	private epsWindowStart = 0;
 	private epsWindowCount = 0;
 	private epsPrevRate = 0;
+	private globalEventTs: number[] = [];
+	private perDidEventTs = new Map<string, number[]>();
+	private rateLimitDroppedPerDid = 0;
+	private rateLimitDroppedGlobal = 0;
+	private rateLimitSweepCounter = 0;
 
 	/** Tagged template wrapper around ctx.storage.sql.exec. Values are bound as numbered parameters (?1, ?2, ...), never interpolated. */
 	sql<T = Record<string, string | number | boolean | null>>(
@@ -166,6 +177,12 @@ export class Wisp extends DurableObject<Env> {
 					users: userCount[0]?.count ?? 0,
 					interactions: interactionCount[0]?.count ?? 0,
 					journal: journalCount[0]?.count ?? 0,
+				},
+				rateLimit: {
+					trackedDids: this.perDidEventTs.size,
+					recentEvents: this.globalEventTs.length,
+					droppedPerDid: this.rateLimitDroppedPerDid,
+					droppedGlobal: this.rateLimitDroppedGlobal,
 				},
 				identity: identity?.slice(0, 200) + "...",
 				normsLength: norms?.length ?? 0,
@@ -270,6 +287,10 @@ export class Wisp extends DurableObject<Env> {
 				this.recordBlockEvent(event);
 
 				if (this.isRelevantEvent(event)) {
+					if (this.shouldRateLimit(event.did)) {
+						console.log(`Rate-limited event from ${event.did}`);
+						return;
+					}
 					this.eventsHandled++;
 					await this.handleEvent(event);
 				}
@@ -357,6 +378,45 @@ export class Wisp extends DurableObject<Env> {
 				VALUES (${blocker}, ${subject}, ${rkey}, ${Date.now()})`;
 		} else if (operation === "delete") {
 			this.sql`DELETE FROM blocks WHERE blocker_did = ${blocker} AND rkey = ${rkey}`;
+		}
+	}
+
+	private shouldRateLimit(did: string): boolean {
+		if (did === env.ADMIN_DID) return false;
+
+		const now = Date.now();
+
+		this.globalEventTs = this.globalEventTs.filter((t) => now - t < RATE_LIMIT_GLOBAL_WINDOW);
+		if (this.globalEventTs.length >= RATE_LIMIT_GLOBAL_MAX) {
+			this.rateLimitDroppedGlobal++;
+			return true;
+		}
+
+		const existing = this.perDidEventTs.get(did) ?? [];
+		const fresh = existing.filter((t) => now - t < RATE_LIMIT_PER_DID_WINDOW);
+		if (fresh.length >= RATE_LIMIT_PER_DID_MAX) {
+			this.perDidEventTs.set(did, fresh);
+			this.rateLimitDroppedPerDid++;
+			return true;
+		}
+
+		fresh.push(now);
+		this.perDidEventTs.set(did, fresh);
+		this.globalEventTs.push(now);
+
+		this.maybeSweepRateLimit(now);
+		return false;
+	}
+
+	private maybeSweepRateLimit(now: number) {
+		if (++this.rateLimitSweepCounter % RATE_LIMIT_SWEEP_EVERY !== 0) return;
+		for (const [did, ts] of this.perDidEventTs) {
+			const fresh = ts.filter((t) => now - t < RATE_LIMIT_PER_DID_WINDOW);
+			if (fresh.length === 0) {
+				this.perDidEventTs.delete(did);
+			} else if (fresh.length !== ts.length) {
+				this.perDidEventTs.set(did, fresh);
+			}
 		}
 	}
 
